@@ -58,11 +58,13 @@ import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import app.marlboroadvance.mpvex.preferences.preference.deleteAndGet
 import app.marlboroadvance.mpvex.presentation.components.ExpandableCard
 import app.marlboroadvance.mpvex.presentation.components.ExposedTextDropDownMenu
+import app.marlboroadvance.mpvex.presentation.components.FineTuneDialog
 import app.marlboroadvance.mpvex.presentation.components.SliderItem
 import app.marlboroadvance.mpvex.ui.player.controls.CARDS_MAX_WIDTH
 import app.marlboroadvance.mpvex.ui.player.controls.components.sheets.toFixed
 import app.marlboroadvance.mpvex.ui.player.controls.panelCardsColors
 import app.marlboroadvance.mpvex.ui.theme.spacing
+import java.util.Locale
 import com.github.k1rakishou.fsaf.FileManager
 import com.yubyf.truetypeparser.TTFFile
 import kotlin.math.roundToInt
@@ -178,6 +180,9 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
       val shadowOffset by preferences.secondaryShadowOffset.collectAsState()
       val subScale by preferences.secondarySubScale.collectAsState()
       val secondarySpacing by preferences.secondarySubSpacing.collectAsState()
+      val secondarySubPos by preferences.secondarySubPos.collectAsState()
+      var showSpacingFineTune by remember { mutableStateOf(false) }
+      var showSecPosFineTune by remember { mutableStateOf(false) }
 
       // Bold, Italic, Alignment, Reset
       Row(
@@ -333,21 +338,77 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
         icon = { Icon(Icons.Default.FormatSize, null) },
       )
 
-      // Line spacing slider between primary and secondary subtitles (-40.0 to +40.0, step 0.2)
+      // Line spacing slider between primary and secondary subtitles (-40.0 to +40.0, 0.1 fine tune)
       SliderItem(
         label = stringResource(R.string.player_sheets_secondary_sub_spacing_label),
         value = secondarySpacing,
-        valueText = secondarySpacing.toFixed(1).toString(),
+        valueText = String.format(Locale.US, "%.1f", secondarySpacing),
         onChange = { rawSpacing ->
-          val newSpacing = (rawSpacing * 5f).roundToInt() / 5f
+          val newSpacing = (rawSpacing * 10f).roundToInt() / 10f
           preferences.secondarySubSpacing.set(newSpacing)
           applySecondarySubStyleOverrides(preferences)
         },
         min = -40f,
         max = 40f,
-        steps = 399,
+        steps = 80,
         icon = { Icon(Icons.Default.AlignVerticalCenter, null) },
+        onLongClick = { showSpacingFineTune = true },
       )
+
+      if (showSpacingFineTune) {
+        FineTuneDialog(
+          title = stringResource(R.string.player_sheets_secondary_sub_spacing_label),
+          value = secondarySpacing,
+          min = -40f,
+          max = 40f,
+          defaultValue = -8.0f,
+          onValueChange = { newSpacing ->
+            val rounded = (newSpacing * 10f).roundToInt() / 10f
+            preferences.secondarySubSpacing.set(rounded)
+            applySecondarySubStyleOverrides(preferences)
+          },
+          onDismissRequest = { showSpacingFineTune = false },
+        )
+      }
+
+      // Secondary subtitle absolute position slider (0.0 to 150.0, 0.1 fine tune)
+      SliderItem(
+        label = stringResource(R.string.player_sheets_secondary_sub_position_label),
+        value = secondarySubPos,
+        valueText = String.format(Locale.US, "%.1f", secondarySubPos),
+        onChange = { rawSecPos ->
+          val rounded = (rawSecPos * 10f).roundToInt() / 10f
+          val curSubPos = preferences.subPos.get()
+          val newSpacing = ((curSubPos - rounded) * 10f).roundToInt() / 10f
+          preferences.secondarySubSpacing.set(newSpacing.coerceIn(-40f, 40f))
+          preferences.secondarySubPos.set(rounded)
+          applySecondarySubStyleOverrides(preferences)
+        },
+        min = 0f,
+        max = 150f,
+        steps = 150,
+        icon = { Icon(Icons.Default.AlignVerticalCenter, null) },
+        onLongClick = { showSecPosFineTune = true },
+      )
+
+      if (showSecPosFineTune) {
+        FineTuneDialog(
+          title = stringResource(R.string.player_sheets_secondary_sub_position_label),
+          value = secondarySubPos,
+          min = 0f,
+          max = 150f,
+          defaultValue = 100.0f,
+          onValueChange = { rawSecPos ->
+            val rounded = (rawSecPos * 10f).roundToInt() / 10f
+            val curSubPos = preferences.subPos.get()
+            val newSpacing = ((curSubPos - rounded) * 10f).roundToInt() / 10f
+            preferences.secondarySubSpacing.set(newSpacing.coerceIn(-40f, 40f))
+            preferences.secondarySubPos.set(rounded)
+            applySecondarySubStyleOverrides(preferences)
+          },
+          onDismissRequest = { showSecPosFineTune = false },
+        )
+      }
 
       // Colors Section
       var currentColorType by remember { mutableStateOf(SecondarySubColorType.Text) }

@@ -45,3 +45,17 @@
   * **Redundant JNI Flooding Removed**: Removed `sid` and `secondary-sid` property observers in [MPVView.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/MPVView.kt) and [PlayerActivity.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/PlayerActivity.kt), eliminating 30+ repetitive synchronous JNI calls during track initialization and switching.
   * **Lazy Font Discovery**: Font scanning in `SecondarySubtitleSettingsCard` is deferred via `LaunchedEffect(isExpanded)`, preventing heavy filesystem scans and TTF parsing during app startup or player entry until the user actually expands the settings card.
   * **Compose Render Optimization**: Streamlined [ControlsButton.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/components/ControlsButton.kt) by rendering `ImageVector` directly via `Icon(imageVector)` instead of wrapping each button in `rememberVectorPainter(icon)`, eliminating frame drops during player controls fade animations.
+
+### 5. High-Precision 0.1 Fine-Tuning for Subtitle Positions & Spacing
+* **Background & Technical Challenges**:
+  * In `libmpv`, `sub-pos` and `secondary-sub-pos` are strictly integer options (`OPT_INT(0, 150)`) representing integer percentages of screen height (1 step ≈ 10.8px on 1080p). Passing floating-point numbers directly to mpv causes truncation to whole integers.
+  * Furthermore, dragging a touch slider across 800+ discrete 0.1-step increments on mobile screens is prone to touch inaccuracy and jitter.
+* **Implementation & Solution**:
+  * **[FineTuneDialog.kt](app/src/main/java/app/marlboroadvance/mpvex/presentation/components/FineTuneDialog.kt)**: Created a specialized Material 3 precision modal dialogue featuring:
+    * Direct numeric keyboard input with 0.1 decimal support.
+    * A quick `±` sign toggle for negative range navigation (e.g. bilingual line spacing `-40.0 .. +40.0`).
+    * Four rapid-fire repeating stepper buttons: `[-1.0]`, `[-0.1]`, `[+0.1]`, and `[+1.0]` built on `RepeatingTonalButton`, allowing continuous smooth adjustments by holding down the buttons while streaming live subtitle updates to the video screen.
+    * One-tap reset to default values and confirmation dismiss.
+  * **[SliderItem.kt](app/src/main/java/app/marlboroadvance/mpvex/presentation/components/SliderItem.kt)**: Augmented with `onLongClick` support. Long-pressing the leading label, icon, or value area generates haptic feedback and triggers the fine-tuning dialog.
+  * **[BilingualSubtitleParser.kt](app/src/main/java/app/marlboroadvance/mpvex/utils/media/BilingualSubtitleParser.kt)**: Overcame mpv's integer `sub-pos` constraint by translating sub-percentage fractional offsets (`diff = secPos - round(secPos)`) directly into `Secondary.MarginV` overrides in standard ASS pixels (`pixelOffset = -(diff * 10.8f).roundToInt()`), unlocking true sub-pixel/pixel-level physical subtitle movement on screen.
+  * **Preferences & UI Panels**: Upgraded `sub_pos` and `secondary_sub_pos` in [SubtitlesPreferences.kt](app/src/main/java/app/marlboroadvance/mpvex/preferences/SubtitlesPreferences.kt) to `Float` with automatic migration. Added dedicated secondary subtitle position and spacing sliders with 0.1 fine-tuning in [SubtitleSettingsMiscellaneousCard.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/components/panels/SubtitleSettingsMiscellaneousCard.kt) and [SecondarySubtitleSettingsCard.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/components/panels/SecondarySubtitleSettingsCard.kt).

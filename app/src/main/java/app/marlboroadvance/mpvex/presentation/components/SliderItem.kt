@@ -1,5 +1,7 @@
 package app.marlboroadvance.mpvex.presentation.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +16,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -24,6 +27,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import app.marlboroadvance.mpvex.ui.theme.spacing
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SliderItem(
   label: String,
@@ -33,6 +37,7 @@ fun SliderItem(
   max: Int,
   modifier: Modifier = Modifier,
   min: Int = 0,
+  onLongClick: (() -> Unit)? = null,
   icon: @Composable () -> Unit = {},
 ) {
   val haptic = LocalHapticFeedback.current
@@ -48,13 +53,34 @@ fun SliderItem(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
   ) {
-    icon()
-    Column(modifier = Modifier.weight(0.65f)) {
-      Text(
-        text = label,
-        style = MaterialTheme.typography.bodyMedium,
-      )
-      Text(valueText)
+    Row(
+      modifier = Modifier
+        .weight(0.7f)
+        .clip(MaterialTheme.shapes.small)
+        .then(
+          if (onLongClick != null) {
+            Modifier.combinedClickable(
+              onClick = {},
+              onLongClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onLongClick()
+              },
+            )
+          } else {
+            Modifier
+          }
+        ),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
+    ) {
+      icon()
+      Column {
+        Text(
+          text = label,
+          style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(valueText)
+      }
     }
 
     Slider(
@@ -66,13 +92,14 @@ fun SliderItem(
           haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
       },
-      modifier = Modifier.weight(1.35f),
+      modifier = Modifier.weight(1.3f),
       valueRange = min.toFloat()..max.toFloat(),
       steps = max - min,
     )
   }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SliderItem(
   label: String,
@@ -83,6 +110,7 @@ fun SliderItem(
   modifier: Modifier = Modifier,
   steps: Int = 0,
   min: Float = 0f,
+  onLongClick: (() -> Unit)? = null,
   icon: @Composable () -> Unit = {},
 ) {
   val haptic = LocalHapticFeedback.current
@@ -98,13 +126,34 @@ fun SliderItem(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
   ) {
-    icon()
-    Column(modifier = Modifier.weight(0.65f)) {
-      Text(
-        text = label,
-        style = MaterialTheme.typography.bodyMedium,
-      )
-      Text(valueText)
+    Row(
+      modifier = Modifier
+        .weight(0.7f)
+        .clip(MaterialTheme.shapes.small)
+        .then(
+          if (onLongClick != null) {
+            Modifier.combinedClickable(
+              onClick = {},
+              onLongClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onLongClick()
+              },
+            )
+          } else {
+            Modifier
+          }
+        ),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
+    ) {
+      icon()
+      Column {
+        Text(
+          text = label,
+          style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(valueText)
+      }
     }
 
     Slider(
@@ -116,7 +165,7 @@ fun SliderItem(
           haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
       },
-      modifier = Modifier.weight(1.35f),
+      modifier = Modifier.weight(1.3f),
       valueRange = min..max,
       steps = steps,
     )

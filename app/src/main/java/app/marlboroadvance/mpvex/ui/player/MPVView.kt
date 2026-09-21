@@ -20,6 +20,7 @@ import `is`.xyz.mpv.KeyMapping
 import `is`.xyz.mpv.MPVLib
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
+import kotlin.math.roundToInt
 import kotlin.reflect.KProperty
 
 class MPVView(
@@ -290,7 +291,7 @@ class MPVView(
     val borderSize = subtitlesPreferences.borderSize.get().toString()
     val borderStyle = subtitlesPreferences.borderStyle.get().value
     val shadowOffset = subtitlesPreferences.shadowOffset.get().toString()
-    val subPos = subtitlesPreferences.subPos.get().toString()
+    val subPos = subtitlesPreferences.subPos.get().roundToInt().toString()
     val subScale = subtitlesPreferences.subScale.get().toString()
     val subSpacing = subtitlesPreferences.subSpacing.get().toString()
 
@@ -311,7 +312,7 @@ class MPVView(
     MPVLib.setOptionString("sub-ass-line-spacing", subSpacing)
 
     // Position and style secondary subtitle using native libass overrides
-    val secSubPos = subtitlesPreferences.secondarySubPos.get().toString()
+    val secSubPos = subtitlesPreferences.secondarySubPos.get().roundToInt().toString()
     MPVLib.setOptionString("secondary-sub-pos", secSubPos)
     applySecondarySubStyleOverrides(subtitlesPreferences)
 

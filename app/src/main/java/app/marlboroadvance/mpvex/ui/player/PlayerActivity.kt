@@ -58,6 +58,7 @@ import `is`.xyz.mpv.MPVNode
 import `is`.xyz.mpv.Utils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -2011,7 +2012,7 @@ class PlayerActivity :
     MPVLib.setPropertyFloat("sub-border-size", subtitlesPreferences.borderSize.get())
     MPVLib.setPropertyInt("sub-shadow-offset", subtitlesPreferences.shadowOffset.get())
     MPVLib.setPropertyFloat("sub-scale", subtitlesPreferences.subScale.get())
-    MPVLib.setPropertyInt("sub-pos", subtitlesPreferences.subPos.get())
+    MPVLib.setPropertyInt("sub-pos", subtitlesPreferences.subPos.get().roundToInt())
     MPVLib.setPropertyInt("sub-line-spacing", subtitlesPreferences.subSpacing.get())
     MPVLib.setPropertyInt("sub-ass-line-spacing", subtitlesPreferences.subSpacing.get())
 

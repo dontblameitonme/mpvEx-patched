@@ -23,6 +23,8 @@ class SubtitlesPreferences(
     preferenceStore.migrateIntToFloat("sub_border_size") { if (it <= 4) it.toFloat() else 3.0f }
     preferenceStore.migrateIntToFloat("secondary_sub_border_size") { if (it <= 4) it.toFloat() else 3.0f }
     preferenceStore.migrateIntToFloat("secondary_sub_spacing") { it.toFloat() }
+    preferenceStore.migrateIntToFloat("sub_pos") { it.toFloat() }
+    preferenceStore.migrateIntToFloat("secondary_sub_pos") { it.toFloat() }
   }
 
   val preferredLanguages = preferenceStore.getString("sub_preferred_languages")
@@ -44,7 +46,7 @@ class SubtitlesPreferences(
   val backgroundColor = preferenceStore.getInt("sub_color_bg", Color.Transparent.toArgb())
 
   val justification = preferenceStore.getEnum("sub_justify", SubtitleJustification.Auto)
-  val subPos = preferenceStore.getInt("sub_pos", 92)
+  val subPos = preferenceStore.getFloat("sub_pos", 92.0f)
   val subSpacing = preferenceStore.getInt("sub_spacing", 0)
 
   // Secondary Subtitle preferences
@@ -62,7 +64,7 @@ class SubtitlesPreferences(
   val secondaryBackgroundColor = preferenceStore.getInt("secondary_sub_color_bg", Color.Transparent.toArgb())
 
   val secondaryJustification = preferenceStore.getEnum("secondary_sub_justify", SubtitleJustification.Auto)
-  val secondarySubPos = preferenceStore.getInt("secondary_sub_pos", 100)
+  val secondarySubPos = preferenceStore.getFloat("secondary_sub_pos", 100.0f)
   val secondarySubSpacing = preferenceStore.getFloat("secondary_sub_spacing", -8.0f)
 
   val overrideAssSubs =

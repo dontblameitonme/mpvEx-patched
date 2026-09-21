@@ -42,6 +42,9 @@ import kotlin.math.roundToInt
 import me.zhanghai.compose.preference.ListPreferenceType
 import me.zhanghai.compose.preference.ProvidePreferenceLocals
 import me.zhanghai.compose.preference.SwitchPreference
+import app.marlboroadvance.mpvex.presentation.components.FineTuneDialog
+import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
+import java.util.Locale
 import org.koin.compose.koinInject
 
 @Composable
@@ -102,6 +105,8 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
         )
         val subScale by preferences.subScale.collectAsState()
         val subPos by preferences.subPos.collectAsState()
+        var showSubPosFineTune by remember { mutableStateOf(false) }
+
         SliderItem(
           label = stringResource(R.string.player_sheets_sub_scale),
           value = subScale,
@@ -121,23 +126,44 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
         SliderItem(
           label = stringResource(R.string.player_sheets_sub_position_overall),
           value = subPos,
-          valueText = subPos.toString(),
-          onChange = { newPos ->
+          valueText = String.format(Locale.US, "%.1f", subPos),
+          onChange = { rawPos ->
+            val newPos = (rawPos * 10f).roundToInt() / 10f
             preferences.subPos.set(newPos)
-            MPVLib.setPropertyInt("sub-pos", newPos)
-            val spacing = preferences.secondarySubSpacing.get()
-            val newSecPos = (newPos.toFloat() - spacing).coerceIn(0f, 150f)
-            preferences.secondarySubPos.set(newSecPos.roundToInt())
-            MPVLib.setPropertyFloat("secondary-sub-pos", newSecPos)
+            MPVLib.setPropertyInt("sub-pos", newPos.roundToInt())
+            applySecondarySubStyleOverrides(preferences)
           },
-          max = 150,
+          min = 0f,
+          max = 150f,
+          steps = 150,
           icon = {
             Icon(
               Icons.Default.AlignVerticalCenter,
               null,
             )
           },
+          onLongClick = {
+            showSubPosFineTune = true
+          },
         )
+
+        if (showSubPosFineTune) {
+          FineTuneDialog(
+            title = stringResource(R.string.player_sheets_sub_position_overall),
+            value = subPos,
+            min = 0f,
+            max = 150f,
+            defaultValue = 92.0f,
+            onValueChange = { rawPos ->
+              val newPos = (rawPos * 10f).roundToInt() / 10f
+              preferences.subPos.set(newPos)
+              MPVLib.setPropertyInt("sub-pos", newPos.roundToInt())
+              applySecondarySubStyleOverrides(preferences)
+            },
+            onDismissRequest = { showSubPosFineTune = false },
+          )
+        }
+
         Row(
           modifier =
             Modifier
@@ -148,11 +174,8 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
           TextButton(
             onClick = {
               preferences.subPos.deleteAndGet().let { defaultPos ->
-                MPVLib.setPropertyInt("sub-pos", defaultPos)
-                val spacing = preferences.secondarySubSpacing.get()
-                val newSecPos = (defaultPos.toFloat() - spacing).coerceIn(0f, 150f)
-                preferences.secondarySubPos.set(newSecPos.roundToInt())
-                MPVLib.setPropertyFloat("secondary-sub-pos", newSecPos)
+                MPVLib.setPropertyInt("sub-pos", defaultPos.roundToInt())
+                applySecondarySubStyleOverrides(preferences)
               }
               preferences.subScale.deleteAndGet().let {
                 MPVLib.setPropertyFloat("sub-scale", it)

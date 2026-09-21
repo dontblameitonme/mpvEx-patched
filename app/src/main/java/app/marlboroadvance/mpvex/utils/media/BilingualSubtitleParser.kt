@@ -429,8 +429,8 @@ object BilingualSubtitleParser {
     writer.newLine()
     writer.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
     writer.newLine()
-    // Default Secondary style: Fontsize 45, Alignment 2 (bottom center), white text, black border
-    writer.write("Style: Secondary,sans-serif,45,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,10,1")
+    // Default Secondary style: Fontsize 45, Alignment 2 (bottom center), white text, black border, base MarginV 20
+    writer.write("Style: Secondary,sans-serif,45,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,20,1")
     writer.newLine()
     writer.newLine()
     writer.write("[Events]")
@@ -529,6 +529,26 @@ fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
   val assBorderStyle = if (borderStyle == SubtitlesBorderStyle.OpaqueBox) 3 else 1
   val assFont = if (font.isNotBlank() && font != "Default") font else "sans-serif"
 
+  // Update vertical position based on line spacing relative to primary sub position
+  val curSubPos = preferences.subPos.get()
+  val spacing = preferences.secondarySubSpacing.get()
+  val secPos = (curSubPos - spacing).coerceIn(0f, 150f)
+  preferences.secondarySubPos.set(secPos)
+
+  // In mpv, secondary-sub-pos is an integer percentage (0-150) of screen height.
+  // To provide truly continuous 0.1-level precision on screen, we split secPos into:
+  // 1) Integer baseline: secPosInt = secPos.roundToInt()
+  // 2) Fractional difference: diff = secPos - secPosInt (-0.5 to +0.5)
+  // In 1080p ASS, 1% of screen height is ~10.8 pixels.
+  // For bottom-aligned ASS subtitles (Alignment 2), higher MarginV moves text UP,
+  // while higher sub-pos moves text DOWN.
+  // Therefore, if diff > 0 (secPos > secPosInt, text should move lower), MarginV decreases.
+  val secPosInt = secPos.roundToInt()
+  val diff = secPos - secPosInt.toFloat()
+  val pixelOffset = -(diff * 10.8f).roundToInt()
+  val baseMarginV = 20
+  val effectiveMarginV = (baseMarginV + pixelOffset).coerceAtLeast(0)
+
   val overrides = listOf(
     "Secondary.Fontname=$assFont",
     "Secondary.Fontsize=$effectiveFontSize",
@@ -541,15 +561,10 @@ fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
     "Secondary.Shadow=$shadowOffset",
     "Secondary.BorderStyle=$assBorderStyle",
     "Secondary.Alignment=$alignment",
+    "Secondary.MarginV=$effectiveMarginV",
   ).joinToString(",")
 
   MPVLib.setPropertyString("sub-ass-style-overrides", overrides)
   MPVLib.setPropertyString("secondary-sub-ass-override", "scale")
-
-  // Update vertical position based on line spacing relative to primary sub position
-  val curSubPos = preferences.subPos.get()
-  val spacing = preferences.secondarySubSpacing.get()
-  val secPos = (curSubPos.toFloat() - spacing).coerceIn(0f, 150f)
-  preferences.secondarySubPos.set(secPos.roundToInt())
-  MPVLib.setPropertyFloat("secondary-sub-pos", secPos)
+  MPVLib.setPropertyInt("secondary-sub-pos", secPosInt)
 }

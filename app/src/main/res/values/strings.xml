@@ -339,8 +339,11 @@
   <string name="player_sheets_secondary_sub_inactive_hint">提示：当前未选择副字幕轨道，需在字幕列表中选中两个轨道时副字幕才会生效</string>
   <string name="player_sheets_secondary_sub_active_hint">提示：双语副字幕已激活，以下选项独立控制第二语言（如英文）样式；拖动“双语行距”滑块可直接调节第二字幕与第一字幕之间的行距</string>
   <string name="player_sheets_secondary_sub_spacing_label">双语行距（第二字幕与第一字幕间距）</string>
-  <string name="player_sheets_secondary_sub_position_label">双语行距（第二字幕与第一字幕间距）</string>
-  <string name="player_sheets_sub_position_overall">字幕位置（双语整体）</string>
+  <string name="player_sheets_secondary_sub_position_label">第二字幕位置</string>
+  <string name="player_sheets_sub_position_overall">字幕位置（主字幕 / 双语整体）</string>
+  <string name="fine_tune_hint">长按步进按钮可连续微调；点击 ± 可快速取反</string>
+  <string name="fine_tune_range">范围: %1$.1f ~ %2$.1f (步长 0.1)</string>
+  <string name="fine_tune_input_label">数值 (0.1 精度)</string>
   <string name="player_sheets_sub_ass_override_none">None (No override)</string>
   <string name="player_sheets_sub_ass_override_scale">Scale Only</string>
   <string name="player_sheets_sub_ass_override_force">Force Override</string>
