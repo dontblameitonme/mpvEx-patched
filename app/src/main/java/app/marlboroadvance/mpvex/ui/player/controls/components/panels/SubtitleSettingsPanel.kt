@@ -63,6 +63,7 @@ fun SubtitleSettingsPanel(
         SubtitleSettingsTypographyCard()
         SubtitleSettingsColorsCard()
         SubtitlesMiscellaneousCard()
+        SecondarySubtitleSettingsCard()
       }
   }
 }

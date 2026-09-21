@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import app.marlboroadvance.mpvex.R
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
+import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import app.marlboroadvance.mpvex.preferences.preference.deleteAndGet
 import app.marlboroadvance.mpvex.presentation.components.ExpandableCard
 import app.marlboroadvance.mpvex.presentation.components.SliderItem
@@ -33,6 +34,12 @@ import app.marlboroadvance.mpvex.ui.player.controls.components.sheets.toFixed
 import app.marlboroadvance.mpvex.ui.player.controls.panelCardsColors
 import app.marlboroadvance.mpvex.ui.theme.spacing
 import `is`.xyz.mpv.MPVLib
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import app.marlboroadvance.mpvex.preferences.SubAssOverride
+import me.zhanghai.compose.preference.ListPreference
+import kotlin.math.roundToInt
+import me.zhanghai.compose.preference.ListPreferenceType
 import me.zhanghai.compose.preference.ProvidePreferenceLocals
 import me.zhanghai.compose.preference.SwitchPreference
 import org.koin.compose.koinInject
@@ -40,6 +47,7 @@ import org.koin.compose.koinInject
 @Composable
 fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
   val preferences = koinInject<SubtitlesPreferences>()
+  val context = LocalContext.current
   var isExpanded by remember { mutableStateOf(true) }
   ExpandableCard(
     isExpanded,
@@ -56,17 +64,26 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
     ProvidePreferenceLocals {
       Column {
         var overrideAssSubs by remember {
-          mutableStateOf(MPVLib.getPropertyString("sub-ass-override") == "force")
+          mutableStateOf(preferences.overrideAssSubs.get())
         }
-        SwitchPreference(
-          overrideAssSubs,
+        ListPreference(
+          value = overrideAssSubs,
           onValueChange = {
             overrideAssSubs = it
             preferences.overrideAssSubs.set(it)
-            MPVLib.setPropertyString("sub-ass-override", if (it) "force" else "scale")
-            MPVLib.setPropertyString("secondary-sub-ass-override", if (it) "force" else "scale")
+            MPVLib.setPropertyString("sub-ass-override", it.value)
+            MPVLib.setPropertyString("secondary-sub-ass-override", it.value)
+            if (it.value == "force" || it.value == "strip") {
+              MPVLib.setPropertyBoolean("sub-ass-justify", true)
+              MPVLib.setPropertyBoolean("secondary-sub-ass-justify", true)
+            }
           },
-          { Text(stringResource(R.string.player_sheets_sub_override_ass)) },
+          values = SubAssOverride.entries,
+          valueToText = { AnnotatedString(context.getString(it.titleRes)) },
+          title = { Text(stringResource(R.string.player_sheets_sub_override_ass)) },
+          summary = { Text(stringResource(overrideAssSubs.titleRes)) },
+          type = ListPreferenceType.DROPDOWN_MENU,
+          icon = { Icon(Icons.Default.Tune, null) },
         )
         var scaleByWindow by remember {
           mutableStateOf(MPVLib.getPropertyString("sub-scale-by-window") == "yes")
@@ -83,12 +100,12 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
           { Text(stringResource(R.string.player_sheets_sub_scale_by_window)) },
           summary = { Text(stringResource(R.string.player_sheets_sub_scale_by_window_summary)) },
         )
-        val subScale by MPVLib.propFloat["sub-scale"].collectAsState()
-        val subPos by MPVLib.propInt["sub-pos"].collectAsState()
+        val subScale by preferences.subScale.collectAsState()
+        val subPos by preferences.subPos.collectAsState()
         SliderItem(
           label = stringResource(R.string.player_sheets_sub_scale),
-          value = subScale ?: preferences.subScale.get(),
-          valueText = (subScale ?: preferences.subScale.get()).toFixed(2).toString(),
+          value = subScale,
+          valueText = subScale.toFixed(2).toString(),
           onChange = {
             preferences.subScale.set(it)
             MPVLib.setPropertyFloat("sub-scale", it)
@@ -102,12 +119,16 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
           },
         )
         SliderItem(
-          label = stringResource(R.string.player_sheets_sub_position),
-          value = subPos ?: preferences.subPos.get(),
-          valueText = (subPos ?: preferences.subPos.get()).toString(),
-          onChange = {
-            preferences.subPos.set(it)
-            MPVLib.setPropertyInt("sub-pos", it)
+          label = stringResource(R.string.player_sheets_sub_position_overall),
+          value = subPos,
+          valueText = subPos.toString(),
+          onChange = { newPos ->
+            preferences.subPos.set(newPos)
+            MPVLib.setPropertyInt("sub-pos", newPos)
+            val spacing = preferences.secondarySubSpacing.get()
+            val newSecPos = (newPos.toFloat() - spacing).coerceIn(0f, 150f)
+            preferences.secondarySubPos.set(newSecPos.roundToInt())
+            MPVLib.setPropertyFloat("secondary-sub-pos", newSecPos)
           },
           max = 150,
           icon = {
@@ -126,16 +147,20 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
         ) {
           TextButton(
             onClick = {
-              preferences.subPos.deleteAndGet().let {
-                MPVLib.setPropertyInt("sub-pos", it)
+              preferences.subPos.deleteAndGet().let { defaultPos ->
+                MPVLib.setPropertyInt("sub-pos", defaultPos)
+                val spacing = preferences.secondarySubSpacing.get()
+                val newSecPos = (defaultPos.toFloat() - spacing).coerceIn(0f, 150f)
+                preferences.secondarySubPos.set(newSecPos.roundToInt())
+                MPVLib.setPropertyFloat("secondary-sub-pos", newSecPos)
               }
               preferences.subScale.deleteAndGet().let {
                 MPVLib.setPropertyFloat("sub-scale", it)
               }
               val defaultOverride = preferences.overrideAssSubs.deleteAndGet()
               overrideAssSubs = defaultOverride
-              MPVLib.setPropertyString("sub-ass-override", if (defaultOverride) "force" else "scale")
-              MPVLib.setPropertyString("secondary-sub-ass-override", if (defaultOverride) "force" else "scale")
+              MPVLib.setPropertyString("sub-ass-override", defaultOverride.value)
+              MPVLib.setPropertyString("secondary-sub-ass-override", defaultOverride.value)
               val defaultScaleByWindow = preferences.scaleByWindow.deleteAndGet()
               scaleByWindow = defaultScaleByWindow
               val scaleValue = if (defaultScaleByWindow) "yes" else "no"

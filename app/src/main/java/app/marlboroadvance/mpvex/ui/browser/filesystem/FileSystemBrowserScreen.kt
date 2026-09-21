@@ -780,6 +780,7 @@ fun FileSystemBrowserScreen(path: String? = null) {
                           val intent = Intent(Intent.ACTION_VIEW, allVideos[startIndex].uri)
                           intent.setClass(context, app.marlboroadvance.mpvex.ui.player.PlayerActivity::class.java)
                           intent.putExtra("internal_launch", true)
+                          intent.putExtra("file_path", allVideos[startIndex].path)
                           intent.putParcelableArrayListExtra("playlist", ArrayList(allVideos.map { it.uri }))
                           intent.putExtra("playlist_index", startIndex)
                           intent.putExtra("launch_source", "playlist")

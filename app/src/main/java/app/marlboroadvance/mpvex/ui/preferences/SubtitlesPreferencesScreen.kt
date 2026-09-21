@@ -56,6 +56,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import androidx.compose.ui.text.AnnotatedString
+import app.marlboroadvance.mpvex.preferences.SubAssOverride
+import me.zhanghai.compose.preference.ListPreference
+import me.zhanghai.compose.preference.ListPreferenceType
 import me.zhanghai.compose.preference.Preference
 import me.zhanghai.compose.preference.ProvidePreferenceLocals
 import me.zhanghai.compose.preference.SwitchPreference
@@ -211,16 +215,19 @@ object SubtitlesPreferencesScreen : Screen {
               PreferenceDivider()
 
               val overrideAss by preferences.overrideAssSubs.collectAsState()
-              SwitchPreference(
+              ListPreference(
                 value = overrideAss,
-                onValueChange = { preferences.overrideAssSubs.set(it) },
+                onValueChange = preferences.overrideAssSubs::set,
+                values = SubAssOverride.entries,
+                valueToText = { AnnotatedString(context.getString(it.titleRes)) },
                 title = { Text(stringResource(R.string.player_sheets_sub_override_ass)) },
                 summary = {
                   Text(
-                    stringResource(R.string.player_sheets_sub_override_ass_subtitle),
+                    stringResource(overrideAss.titleRes),
                     color = MaterialTheme.colorScheme.outline,
                   )
                 },
+                type = ListPreferenceType.DROPDOWN_MENU,
               )
 
               PreferenceDivider()

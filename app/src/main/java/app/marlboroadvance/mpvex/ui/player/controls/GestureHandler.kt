@@ -347,9 +347,14 @@ fun GestureHandler(
           var lastVolumeValue = currentVolume
           var lastMPVVolumeValue = currentMPVVolume ?: 100
           var lastBrightnessValue = currentBrightness
-          val brightnessGestureSens = 0.001f
-          val volumeGestureSens = 0.017f
-          val mpvVolumeGestureSens = 0.017f
+          // Dynamically scale gesture sensitivity based on screen height so ~60% vertical swipe covers the full range.
+          // Previously, volumeGestureSens was 0.017f which required ~1500-2000px of scrolling for full volume,
+          // and MPV volume boost required over 5800px.
+          val slideHeight = (size.height * 0.6f).coerceAtLeast(1f)
+          val brightnessGestureSens = (1.0f / slideHeight).coerceAtLeast(0.001f)
+          val volumeGestureSens = (viewModel.maxVolume.toFloat() / slideHeight).coerceAtLeast(0.035f)
+          val boostRange = if (volumeBoostingCap > 0) volumeBoostingCap.toFloat() else 100f
+          val mpvVolumeGestureSens = (boostRange / slideHeight).coerceAtLeast(0.12f)
 
           // Original speed for long press
           var originalSpeed = playbackSpeed ?: 1f

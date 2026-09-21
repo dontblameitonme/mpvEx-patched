@@ -84,9 +84,15 @@ import app.marlboroadvance.mpvex.ui.player.Sheets
 import app.marlboroadvance.mpvex.ui.player.VideoAspect
 import app.marlboroadvance.mpvex.ui.player.controls.components.ControlsButton
 import app.marlboroadvance.mpvex.ui.player.controls.components.CurrentChapter
+import android.widget.Toast
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.res.painterResource
+import app.marlboroadvance.mpvex.R
+import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.ui.theme.controlColor
 import app.marlboroadvance.mpvex.ui.theme.spacing
 import dev.vivvvek.seeker.Segment
+import org.koin.compose.koinInject
 
 @Composable
 fun RenderPlayerButton(
@@ -532,18 +538,33 @@ fun RenderPlayerButton(
     }
 
     PlayerButton.ASPECT_RATIO -> {
+      val context = LocalContext.current
+      val playerPreferences = koinInject<PlayerPreferences>()
       ControlsButton(
-        icon =
+        painter =
           when (aspect) {
-            VideoAspect.Fit -> Icons.Default.AspectRatio
-            VideoAspect.Stretch -> Icons.Default.ZoomOutMap
-            VideoAspect.Crop -> Icons.Default.FitScreen
+            VideoAspect.Fit -> rememberVectorPainter(Icons.Default.AspectRatio)
+            VideoAspect.Custom -> painterResource(R.drawable.ic_crop_custom_24)
+            VideoAspect.Crop -> rememberVectorPainter(Icons.Default.FitScreen)
+            VideoAspect.Stretch -> rememberVectorPainter(Icons.Default.ZoomOutMap)
           },
         onClick = {
           when (aspect) {
-            VideoAspect.Fit -> viewModel.changeVideoAspect(VideoAspect.Stretch)
-            VideoAspect.Stretch -> viewModel.changeVideoAspect(VideoAspect.Crop)
-            VideoAspect.Crop -> viewModel.changeVideoAspect(VideoAspect.Fit)
+            VideoAspect.Fit -> {
+              if (playerPreferences.customCropAspectRatio.get() > 0) {
+                viewModel.changeVideoAspect(VideoAspect.Custom)
+              } else {
+                Toast.makeText(
+                  context,
+                  context.getString(R.string.player_custom_crop_not_set),
+                  Toast.LENGTH_SHORT,
+                ).show()
+                viewModel.changeVideoAspect(VideoAspect.Crop)
+              }
+            }
+            VideoAspect.Custom -> viewModel.changeVideoAspect(VideoAspect.Crop)
+            VideoAspect.Crop -> viewModel.changeVideoAspect(VideoAspect.Stretch)
+            VideoAspect.Stretch -> viewModel.changeVideoAspect(VideoAspect.Fit)
           }
         },
         onLongClick = { onOpenSheet(Sheets.AspectRatios) },

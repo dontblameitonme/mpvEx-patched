@@ -103,10 +103,18 @@ fun getTrackTitle(
   track: TrackNode,
 ): String {
   // Handle external subtitles
-  if (track.isSubtitle && track.external == true && track.externalFilename != null) {
-    val decoded = Uri.decode(track.externalFilename)
-    val fileName = decoded.substringAfterLast("/")
-    return stringResource(R.string.player_sheets_track_title_wo_lang, track.id, fileName)
+  if (track.isSubtitle && track.external == true) {
+    val displayTitle = if (!track.title.isNullOrBlank()) {
+      track.title
+    } else if (track.externalFilename != null) {
+      val decoded = Uri.decode(track.externalFilename)
+      decoded.substringAfterLast("/")
+    } else {
+      null
+    }
+    if (displayTitle != null) {
+      return stringResource(R.string.player_sheets_track_title_wo_lang, track.id, displayTitle)
+    }
   }
 
   // Build title from available metadata

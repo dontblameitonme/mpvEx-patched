@@ -227,7 +227,7 @@ dependencies {
 /* ---------------- Git helpers ---------------- */
 
 fun getCommitCount(): String =
-  runCommand("git rev-list --count HEAD") ?: "0"
+  runCommand("git rev-list --count HEAD")?.takeIf { it.toIntOrNull() != null } ?: "0"
 
 fun getCommitSha(): String =
   runCommand("git rev-parse --short HEAD") ?: "unknown"
@@ -244,8 +244,8 @@ fun runCommand(command: String): String? =
       .readText()
       .trim()
 
-    process.waitFor()
-    output.ifEmpty { null }
+    val exitCode = process.waitFor()
+    if (exitCode == 0) output.ifEmpty { null } else null
   } catch (e: Exception) {
     null
   }

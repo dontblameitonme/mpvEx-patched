@@ -39,6 +39,16 @@ interface PreferenceStore {
   ): Preference<T>
 
   fun getAll(): Map<String, *>
+
+  fun migrateBooleanToString(
+    key: String,
+    map: (Boolean) -> String,
+  ) {}
+
+  fun migrateIntToFloat(
+    key: String,
+    map: (Int) -> Float,
+  ) {}
 }
 
 inline fun <reified T : Enum<T>> PreferenceStore.getEnum(

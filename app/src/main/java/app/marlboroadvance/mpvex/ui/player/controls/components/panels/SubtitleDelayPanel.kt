@@ -75,21 +75,32 @@ fun SubtitleDelayPanel(
     val speedFloat by remember { derivedStateOf { (speed ?: 1.0).toFloat() } }
     
     // We unwrap the card content here because DraggablePanel already provides the card
+    // Synchronize both primary and secondary subtitle tracks when adjusting delay/speed
     SubtitleDelayCardContent(
       delay = delayFloat,
       onDelayChange = {
-        MPVLib.setPropertyDouble("sub-delay", it.toDouble())
+        val delayVal = it.toDouble()
+        MPVLib.setPropertyDouble("sub-delay", delayVal)
+        MPVLib.setPropertyDouble("secondary-sub-delay", delayVal)
       },
       speed = speedFloat,
-      onSpeedChange = { MPVLib.setPropertyDouble("sub-speed", it.toDouble()) },
+      onSpeedChange = {
+        val speedVal = it.toDouble()
+        MPVLib.setPropertyDouble("sub-speed", speedVal)
+        MPVLib.setPropertyDouble("secondary-sub-speed", speedVal)
+      },
       onApply = {
         preferences.defaultSubDelay.set((delayFloat * 1000).roundToInt())
         val currentSpeed = speed ?: 1.0
         if (currentSpeed in 0.1..10.0) preferences.defaultSubSpeed.set(currentSpeed.toFloat())
       },
       onReset = {
-        MPVLib.setPropertyDouble("sub-delay", preferences.defaultSubDelay.get() / 1000.0)
-        MPVLib.setPropertyDouble("sub-speed", preferences.defaultSubSpeed.get().toDouble())
+        val defaultDelay = preferences.defaultSubDelay.get() / 1000.0
+        val defaultSpeed = preferences.defaultSubSpeed.get().toDouble()
+        MPVLib.setPropertyDouble("sub-delay", defaultDelay)
+        MPVLib.setPropertyDouble("secondary-sub-delay", defaultDelay)
+        MPVLib.setPropertyDouble("sub-speed", defaultSpeed)
+        MPVLib.setPropertyDouble("secondary-sub-speed", defaultSpeed)
       },
     )
   }

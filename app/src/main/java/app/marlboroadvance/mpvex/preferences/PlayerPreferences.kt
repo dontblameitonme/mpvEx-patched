@@ -78,4 +78,13 @@ class PlayerPreferences(
     serializer = { it.toString() },
     deserializer = { it.toDoubleOrNull() ?: -1.0 }
   )
+
+  val rememberAspectRatio = preferenceStore.getBoolean("remember_aspect_ratio", true)
+  val customCropAspectRatio = preferenceStore.getObject(
+    key = "custom_crop_aspect_ratio",
+    defaultValue = -1.0,
+    serializer = { it.toString() },
+    deserializer = { it.toDoubleOrNull() ?: -1.0 }
+  )
+  val customCropAspectRatioText = preferenceStore.getString("custom_crop_aspect_ratio_text", "")
 }

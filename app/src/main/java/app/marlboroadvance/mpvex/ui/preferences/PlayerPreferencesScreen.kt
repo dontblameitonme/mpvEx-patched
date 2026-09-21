@@ -95,6 +95,21 @@ object PlayerPreferencesScreen : Screen {
               )
               
               PreferenceDivider()
+
+              val rememberAspectRatio by preferences.rememberAspectRatio.collectAsState()
+              SwitchPreference(
+                value = rememberAspectRatio,
+                onValueChange = preferences.rememberAspectRatio::set,
+                title = { Text(stringResource(R.string.pref_player_remember_aspect_ratio)) },
+                summary = {
+                  Text(
+                    stringResource(R.string.pref_player_remember_aspect_ratio_summary),
+                    color = MaterialTheme.colorScheme.outline,
+                  )
+                },
+              )
+
+              PreferenceDivider()
               
               val savePositionOnQuit by preferences.savePositionOnQuit.collectAsState()
               SwitchPreference(

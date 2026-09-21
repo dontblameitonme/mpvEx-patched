@@ -3,6 +3,7 @@ package app.marlboroadvance.mpvex.ui.player
 import android.util.Log
 import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
+import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import `is`.xyz.mpv.MPVLib
 import kotlinx.coroutines.delay
 
@@ -247,6 +248,21 @@ class TrackSelector(
       val subTracks = tracks.filter { it.type == "sub" }
 
       // PASS 00: EXTERNAL TRACK OVERRIDE (Protects manually loaded subtitle files)
+      val priBilingualTrack = subTracks.firstOrNull { it.external && it.title.startsWith("[中]") }
+      val secBilingualTrack = subTracks.firstOrNull { it.external && it.title.startsWith("[英]") }
+      if (priBilingualTrack != null) {
+        if (currentSid != priBilingualTrack.id) {
+          Log.d(TAG, "Smart Sub: Bilingual Primary [中] (id=${priBilingualTrack.id}) [Applied]")
+          MPVLib.setPropertyInt("sid", priBilingualTrack.id)
+        }
+        if (secBilingualTrack != null) {
+          Log.d(TAG, "Smart Sub: Bilingual Secondary [英] (id=${secBilingualTrack.id}) [Applied]")
+          MPVLib.setPropertyInt("secondary-sid", secBilingualTrack.id)
+          applySecondarySubStyleOverrides(subtitlesPreferences)
+        }
+        return
+      }
+
       for (track in subTracks) {
         if (track.external) {
           if (currentSid == track.id) {

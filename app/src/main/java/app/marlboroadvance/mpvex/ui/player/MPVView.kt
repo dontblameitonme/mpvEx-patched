@@ -14,6 +14,7 @@ import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.domain.anime4k.Anime4KManager
 import app.marlboroadvance.mpvex.ui.player.PlayerActivity.Companion.TAG
 import app.marlboroadvance.mpvex.ui.player.controls.components.panels.toColorHexString
+import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import `is`.xyz.mpv.BaseMPVView
 import `is`.xyz.mpv.KeyMapping
 import `is`.xyz.mpv.MPVLib
@@ -153,6 +154,8 @@ class MPVView(
 
   override fun observeProperties() {
     for ((name, format) in observedProps) MPVLib.observeProperty(name, format)
+    // Removed sid and secondary-sid observers: observing these caused repetitive JNI
+    // applySubtitlePreferences() re-invocations on every track switch, freezing the main looper.
   }
 
   override fun postInitOptions() {
@@ -265,20 +268,18 @@ class MPVView(
     val preferredFont = subtitlesPreferences.font.get()
     if (preferredFont.isNotBlank()) {
       MPVLib.setOptionString("sub-font", preferredFont)
-      MPVLib.setOptionString("secondary-sub-font", preferredFont)
     }
     // If blank, MPV uses its default font
 
-    if (subtitlesPreferences.overrideAssSubs.get()) {
-      MPVLib.setOptionString("sub-ass-override", "force")
+    val assOverrideMode = subtitlesPreferences.overrideAssSubs.get().value
+    MPVLib.setOptionString("sub-ass-override", assOverrideMode)
+    // Always enable scale for secondary subtitles so our dedicated Secondary ASS style is rendered
+    MPVLib.setOptionString("secondary-sub-ass-override", "scale")
+    if (assOverrideMode == "force" || assOverrideMode == "strip") {
       MPVLib.setOptionString("sub-ass-justify", "yes")
-      MPVLib.setOptionString("secondary-sub-ass-override", "force")
-    } else {
-      MPVLib.setOptionString("sub-ass-override", "no")
-      MPVLib.setOptionString("secondary-sub-ass-override", "no")
     }
 
-    // Typography and styling for both primary and secondary
+    // Typography and styling for primary subtitle
     val fontSize = subtitlesPreferences.fontSize.get().toString()
     val bold = if (subtitlesPreferences.bold.get()) "yes" else "no"
     val italic = if (subtitlesPreferences.italic.get()) "yes" else "no"
@@ -291,6 +292,7 @@ class MPVView(
     val shadowOffset = subtitlesPreferences.shadowOffset.get().toString()
     val subPos = subtitlesPreferences.subPos.get().toString()
     val subScale = subtitlesPreferences.subScale.get().toString()
+    val subSpacing = subtitlesPreferences.subSpacing.get().toString()
 
     MPVLib.setOptionString("sub-font-size", fontSize)
     MPVLib.setOptionString("sub-bold", bold)
@@ -300,24 +302,18 @@ class MPVView(
     MPVLib.setOptionString("sub-back-color", backgroundColor)
     MPVLib.setOptionString("sub-border-color", borderColor)
     MPVLib.setOptionString("sub-border-size", borderSize)
+    MPVLib.setOptionString("sub-outline-size", borderSize)
     MPVLib.setOptionString("sub-border-style", borderStyle)
     MPVLib.setOptionString("sub-shadow-offset", shadowOffset)
     MPVLib.setOptionString("sub-scale", subScale)
     MPVLib.setOptionString("sub-pos", subPos)
-    
-    MPVLib.setOptionString("secondary-sub-font-size", fontSize)
-    MPVLib.setOptionString("secondary-sub-bold", bold)
-    MPVLib.setOptionString("secondary-sub-italic", italic)
-    MPVLib.setOptionString("secondary-sub-justify", justify)
-    MPVLib.setOptionString("secondary-sub-color", textColor)
-    MPVLib.setOptionString("secondary-sub-back-color", backgroundColor)
-    MPVLib.setOptionString("secondary-sub-border-color", borderColor)
-    MPVLib.setOptionString("secondary-sub-border-size", borderSize)
-    MPVLib.setOptionString("secondary-sub-border-style", borderStyle)
-    MPVLib.setOptionString("secondary-sub-shadow-offset", shadowOffset)
-    MPVLib.setOptionString("secondary-sub-scale", subScale)
-    // Position secondary subtitle at top (10) instead of bottom to avoid overlap with primary
-    MPVLib.setOptionString("secondary-sub-pos", "10")
+    MPVLib.setOptionString("sub-line-spacing", subSpacing)
+    MPVLib.setOptionString("sub-ass-line-spacing", subSpacing)
+
+    // Position and style secondary subtitle using native libass overrides
+    val secSubPos = subtitlesPreferences.secondarySubPos.get().toString()
+    MPVLib.setOptionString("secondary-sub-pos", secSubPos)
+    applySecondarySubStyleOverrides(subtitlesPreferences)
 
     val scaleByWindow = if (subtitlesPreferences.scaleByWindow.get()) "yes" else "no"
     MPVLib.setOptionString("sub-scale-by-window", scaleByWindow)

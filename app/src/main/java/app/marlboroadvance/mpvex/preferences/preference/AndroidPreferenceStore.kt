@@ -65,6 +65,34 @@ class AndroidPreferenceStore(
     )
 
   override fun getAll(): Map<String, *> = sharedPreferences.all ?: emptyMap<String, Any>()
+
+  override fun migrateBooleanToString(
+    key: String,
+    map: (Boolean) -> String,
+  ) {
+    if (sharedPreferences.contains(key)) {
+      val all = sharedPreferences.all
+      val raw = all[key]
+      if (raw is Boolean) {
+        val migrated = map(raw)
+        sharedPreferences.edit().putString(key, migrated).apply()
+      }
+    }
+  }
+
+  override fun migrateIntToFloat(
+    key: String,
+    map: (Int) -> Float,
+  ) {
+    if (sharedPreferences.contains(key)) {
+      val all = sharedPreferences.all
+      val raw = all[key]
+      if (raw is Int) {
+        val migrated = map(raw)
+        sharedPreferences.edit().putFloat(key, migrated).apply()
+      }
+    }
+  }
 }
 
 private val SharedPreferences.keyFlow

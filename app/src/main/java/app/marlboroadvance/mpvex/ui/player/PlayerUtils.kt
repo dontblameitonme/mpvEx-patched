@@ -40,6 +40,20 @@ internal fun Uri.openContentFd(context: Context): String? =
     ?: tryFileDescriptorFallback(context)
 
 /**
+ * Attempts to resolve a real filesystem path on disk.
+ * Returns null if only fd:// fallback is possible, ensuring local file operations like subtitle autoloading work.
+ */
+internal fun Uri.getRealFilePath(context: Context): String? {
+  return when (scheme) {
+    "file" -> path
+    "content" -> tryFileDescriptorPath(context)
+      ?: tryMediaStoreQuery(context)
+      ?: tryDocumentUriParsing(context)
+    else -> null
+  }
+}
+
+/**
  * Method 1: Extract real filesystem path from file descriptor.
  * Works best for most content URIs on modern Android.
  */

@@ -207,6 +207,9 @@ fun PlayerSheets(
       val playerPreferences = koinInject<app.marlboroadvance.mpvex.preferences.PlayerPreferences>()
       val customRatiosSet by playerPreferences.customAspectRatios.collectAsState()
       val currentRatio by viewModel.currentAspectRatio.composeCollectAsState()
+      val customCropRatio by playerPreferences.customCropAspectRatio.collectAsState()
+      val customCropText by playerPreferences.customCropAspectRatioText.collectAsState()
+      val videoAspect by viewModel.videoAspect.composeCollectAsState()
       val customRatios =
         customRatiosSet.mapNotNull { str ->
           val parts = str.split("|")
@@ -224,6 +227,9 @@ fun PlayerSheets(
       AspectRatioSheet(
         currentRatio = currentRatio,
         customRatios = customRatios,
+        customCropRatio = customCropRatio,
+        customCropText = customCropText,
+        currentVideoAspect = videoAspect,
         onSelectRatio = { ratio ->
           if (ratio < 0) {
             // Default selected - apply Fit mode
@@ -244,6 +250,9 @@ fun PlayerSheets(
           if (kotlin.math.abs(currentRatio - ratio.ratio) < 0.01) {
             viewModel.changeVideoAspect(app.marlboroadvance.mpvex.ui.player.VideoAspect.Fit)
           }
+        },
+        onApplyCropRatio = { ratio, text ->
+          viewModel.setCustomCropRatio(ratio, text)
         },
         onDismissRequest = onDismissRequest,
       )

@@ -494,6 +494,7 @@ data class PlaylistDetailScreen(val playlistId: Int) : Screen {
                     val intent = Intent(Intent.ACTION_VIEW, videos[startIndex].uri)
                     intent.setClass(context, PlayerActivity::class.java)
                     intent.putExtra("internal_launch", true)
+                    intent.putExtra("file_path", videos[startIndex].path)
                     intent.putExtra("playlist_index", startIndex)
                     intent.putExtra("launch_source", "playlist")
                     intent.putExtra("playlist_id", playlistId)

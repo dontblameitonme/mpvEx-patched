@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.FormatBold
 import androidx.compose.material.icons.filled.FormatClear
 import androidx.compose.material.icons.filled.FormatColorText
 import androidx.compose.material.icons.filled.FormatItalic
+import androidx.compose.material.icons.filled.FormatAlignJustify
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -44,11 +45,13 @@ import androidx.compose.ui.unit.dp
 import app.marlboroadvance.mpvex.R
 import app.marlboroadvance.mpvex.preferences.SubtitleJustification
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
+import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import app.marlboroadvance.mpvex.preferences.preference.deleteAndGet
 import app.marlboroadvance.mpvex.presentation.components.ExpandableCard
 import app.marlboroadvance.mpvex.presentation.components.ExposedTextDropDownMenu
 import app.marlboroadvance.mpvex.presentation.components.SliderItem
 import app.marlboroadvance.mpvex.ui.player.controls.CARDS_MAX_WIDTH
+import app.marlboroadvance.mpvex.ui.player.controls.components.sheets.toFixed
 import app.marlboroadvance.mpvex.ui.player.controls.panelCardsColors
 import app.marlboroadvance.mpvex.ui.theme.spacing
 import com.github.k1rakishou.fsaf.FileManager
@@ -111,20 +114,14 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
     colors = panelCardsColors(),
   ) {
     Column {
-      val isBold by MPVLib.propBoolean["sub-bold"].collectAsState()
-      val isItalic by MPVLib.propBoolean["sub-italic"].collectAsState()
-      val mpvJustify by MPVLib.propString["sub-justify"].collectAsState()
-      val justify by remember {
-        derivedStateOf { SubtitleJustification.entries.first { it.value == mpvJustify } }
-      }
-      val font by MPVLib.propString["sub-font"].collectAsState()
-      val fontSize by MPVLib.propInt["sub-font-size"].collectAsState()
-      val mpvBorderStyle by MPVLib.propString["sub-border-style"].collectAsState()
-      val borderStyle by remember {
-        derivedStateOf { SubtitlesBorderStyle.entries.first { it.value == mpvBorderStyle } }
-      }
-      val borderSize by MPVLib.propInt["sub-outline-size"].collectAsState()
-      val shadowOffset by MPVLib.propInt["sub-shadow-offset"].collectAsState()
+      val isBold by preferences.bold.collectAsState()
+      val isItalic by preferences.italic.collectAsState()
+      val justify by preferences.justification.collectAsState()
+      val font by preferences.font.collectAsState()
+      val fontSize by preferences.fontSize.collectAsState()
+      val borderStyle by preferences.borderStyle.collectAsState()
+      val borderSize by preferences.borderSize.collectAsState()
+      val shadowOffset by preferences.shadowOffset.collectAsState()
       Row(
         Modifier
           .fillMaxWidth()
@@ -199,14 +196,13 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
           modifier = Modifier.size(32.dp),
         )
         ExposedTextDropDownMenu(
-          selectedValue = font!!.ifEmpty { "Default" },
+          selectedValue = font.ifEmpty { "Default" },
           options = fonts.toImmutableList(),
           label = stringResource(R.string.player_sheets_sub_typography_font),
           onValueChangedEvent = {
             val actualFont = if (it == "Default") "" else it
             preferences.font.set(actualFont)
             MPVLib.setPropertyString("sub-font", actualFont)
-            MPVLib.setPropertyString("secondary-sub-font", actualFont)
           },
           leadingIcon = fontsLoadingIndicator,
         )
@@ -215,7 +211,7 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         label = stringResource(R.string.player_sheets_sub_typography_font_size),
         max = 100,
         min = 1,
-        value = fontSize ?: preferences.fontSize.get(),
+        value = fontSize,
         valueText = fontSize.toString(),
         onChange = {
           preferences.fontSize.set(it)
@@ -242,20 +238,23 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         )
       }
       SliderItem(
-        stringResource(R.string.player_sheets_sub_typography_border_size),
-        value = borderSize ?: preferences.borderSize.get(),
-        valueText = (borderSize ?: preferences.borderSize.get()).toString(),
+        label = stringResource(R.string.player_sheets_sub_typography_border_size),
+        value = borderSize,
+        valueText = borderSize.toFixed(1).toString(),
         onChange = {
           preferences.borderSize.set(it)
-          MPVLib.setPropertyInt("sub-outline-size", it)
+          MPVLib.setPropertyFloat("sub-outline-size", it)
+          MPVLib.setPropertyFloat("sub-border-size", it)
         },
-        max = 20,
+        min = 0f,
+        max = 4f,
+        steps = 19,
         icon = { Icon(Icons.Default.BorderColor, null) },
       )
       SliderItem(
         stringResource(R.string.player_sheets_subtitles_shadow_offset),
-        value = shadowOffset ?: preferences.shadowOffset.get(),
-        valueText = (shadowOffset ?: preferences.shadowOffset.get()).toString(),
+        value = shadowOffset,
+        valueText = shadowOffset.toString(),
         onChange = {
           preferences.shadowOffset.set(it)
           MPVLib.setPropertyInt("sub-shadow-offset", it)
@@ -273,11 +272,15 @@ fun resetTypography(preferences: SubtitlesPreferences) {
   MPVLib.setPropertyBoolean("sub-ass-justify", false)
   MPVLib.setPropertyString("sub-justify", preferences.justification.deleteAndGet().value)
   MPVLib.setPropertyString("sub-font", preferences.font.deleteAndGet())
-  MPVLib.setPropertyString("secondary-sub-font", preferences.font.get())
   MPVLib.setPropertyInt("sub-font-size", preferences.fontSize.deleteAndGet())
-  MPVLib.setPropertyInt("sub-border-size", preferences.borderSize.deleteAndGet())
+  val defBorderSize = preferences.borderSize.deleteAndGet()
+  MPVLib.setPropertyFloat("sub-border-size", defBorderSize)
+  MPVLib.setPropertyFloat("sub-outline-size", defBorderSize)
   MPVLib.setPropertyInt("sub-shadow-offset", preferences.shadowOffset.deleteAndGet())
   MPVLib.setPropertyString("sub-border-style", preferences.borderStyle.deleteAndGet().value)
+  val defaultSpacing = preferences.subSpacing.deleteAndGet()
+  MPVLib.setPropertyInt("sub-line-spacing", defaultSpacing)
+  MPVLib.setPropertyInt("sub-ass-line-spacing", defaultSpacing)
 }
 
 enum class SubtitlesBorderStyle(

@@ -24,6 +24,7 @@ enum class VideoAspect(
   Crop(R.string.player_aspect_crop),
   Fit(R.string.player_aspect_fit),
   Stretch(R.string.player_aspect_stretch),
+  Custom(R.string.player_aspect_custom),
 }
 
 enum class SingleActionGesture(

@@ -21,9 +21,12 @@ import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.GesturePreferences
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
+import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
+import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import app.marlboroadvance.mpvex.utils.media.ChecksumUtils
 import app.marlboroadvance.mpvex.utils.media.MediaInfoParser
 import `is`.xyz.mpv.MPVLib
+import kotlin.math.roundToInt
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.CoroutineScope
@@ -426,10 +429,65 @@ class PlayerViewModel(
         val mpvPath = uri.resolveUri(host.context) ?: uri.toString()
         val mode = if (select) "select" else "auto"
         
-        // Store mapping for reliable physical deletion later
-        mpvPathToUriMap[mpvPath] = uri.toString()
-        
-        MPVLib.command("sub-add", mpvPath, mode)
+        val file = if (mpvPath.startsWith("/")) File(mpvPath) else null
+        val splitResult = file?.let {
+          runCatching { BilingualSubtitleParser.splitIfBilingual(it, host.context) }.getOrNull()
+        } ?: runCatching {
+          BilingualSubtitleParser.splitIfBilingual(uri, host.context)
+        }.getOrNull()
+
+        if (splitResult != null) {
+          // Add primary track
+          mpvPathToUriMap[splitResult.primaryFile.absolutePath] = uri.toString()
+          MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, mode, "[中] $fileName")
+
+          // Add secondary track
+          mpvPathToUriMap[splitResult.secondaryFile.absolutePath] = uri.toString()
+          val secTitle = "[英] ${fileName.substringBeforeLast('.')}"
+          MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", secTitle)
+
+          // Add original track as fallback
+          mpvPathToUriMap[mpvPath] = uri.toString()
+          MPVLib.command("sub-add", mpvPath, "auto", "[原版] $fileName")
+
+          if (select) {
+            var priId: Int? = null
+            var secId: Int? = null
+            for (attempt in 0 until 30) {
+              delay(50)
+              val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+              for (i in 0 until count) {
+                val type = MPVLib.getPropertyString("track-list/$i/type")
+                if (type != "sub") continue
+                val extPath = MPVLib.getPropertyString("track-list/$i/external-filename") ?: ""
+                val title = MPVLib.getPropertyString("track-list/$i/title") ?: ""
+                val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
+
+                if (id > 0) {
+                  if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
+                    priId = id
+                  }
+                  if (extPath == splitResult.secondaryFile.absolutePath || title.startsWith("[英]")) {
+                    secId = id
+                  }
+                }
+              }
+              if (priId != null && secId != null) break
+            }
+
+            if (priId != null) {
+              MPVLib.setPropertyInt("sid", priId)
+            }
+            if (secId != null) {
+              MPVLib.setPropertyInt("secondary-sid", secId)
+              applySecondarySubStyleOverrides(subtitlesPreferences)
+            }
+          }
+        } else {
+          // Store mapping for reliable physical deletion later
+          mpvPathToUriMap[mpvPath] = uri.toString()
+          MPVLib.command("sub-add", mpvPath, mode)
+        }
 
         // Track external subtitle URI for persistence
         val uriString = uri.toString()
@@ -494,44 +552,78 @@ class PlayerViewModel(
       scanLocalSubtitles(mediaTitle)
 
       // 1. Reset Aspect Ratio to saved preference
-      val savedAspect = playerPreferences.defaultVideoAspect.get()
-      val savedCustomRatio = playerPreferences.defaultCustomAspectRatio.get()
-      
-      if (savedCustomRatio > 0) {
-        // Apply saved custom aspect ratio
-        _currentAspectRatio.value = savedCustomRatio
-        runCatching {
-          MPVLib.setPropertyDouble("panscan", 0.0)
-          MPVLib.setPropertyDouble("video-aspect-override", savedCustomRatio)
-        }
-      } else {
-        // Apply saved standard aspect mode (Fit, Crop, or Stretch)
-        _videoAspect.value = savedAspect
+      if (!playerPreferences.rememberAspectRatio.get()) {
+        _videoAspect.value = VideoAspect.Fit
         _currentAspectRatio.value = -1.0
         runCatching {
-          when (savedAspect) {
-            VideoAspect.Fit -> {
+          MPVLib.setPropertyDouble("panscan", 0.0)
+          MPVLib.setPropertyDouble("video-aspect-override", -1.0)
+        }
+      } else {
+        val savedAspect = playerPreferences.defaultVideoAspect.get()
+        val savedCustomRatio = playerPreferences.defaultCustomAspectRatio.get()
+        
+        if (savedAspect == VideoAspect.Custom) {
+          val customCrop = playerPreferences.customCropAspectRatio.get()
+          if (customCrop > 0) {
+            _videoAspect.value = VideoAspect.Custom
+            _currentAspectRatio.value = customCrop
+            runCatching {
+              applyCropForRatio(customCrop)
+            }
+          } else {
+            _videoAspect.value = VideoAspect.Fit
+            _currentAspectRatio.value = -1.0
+            runCatching {
+              MPVLib.setPropertyString("video-crop", "")
               MPVLib.setPropertyDouble("panscan", 0.0)
               MPVLib.setPropertyDouble("video-aspect-override", -1.0)
             }
-            VideoAspect.Crop -> {
-              MPVLib.setPropertyDouble("video-aspect-override", -1.0)
-              MPVLib.setPropertyDouble("panscan", 1.0)
-            }
-            VideoAspect.Stretch -> {
-              @Suppress("DEPRECATION")
-              val dm = DisplayMetrics()
-              @Suppress("DEPRECATION")
-              host.hostWindowManager.defaultDisplay.getRealMetrics(dm)
-              val rotate = MPVLib.getPropertyInt("video-params/rotate") ?: 0
-              val isVideoRotated = (rotate % 180 == 90)
-              val screenRatio = if (isVideoRotated) {
-                dm.heightPixels.toDouble() / dm.widthPixels.toDouble()
-              } else {
-                dm.widthPixels.toDouble() / dm.heightPixels.toDouble()
+          }
+        } else if (savedCustomRatio > 0) {
+          // Apply saved custom aspect ratio
+          _currentAspectRatio.value = savedCustomRatio
+          runCatching {
+            MPVLib.setPropertyString("video-crop", "")
+            MPVLib.setPropertyDouble("panscan", 0.0)
+            MPVLib.setPropertyDouble("video-aspect-override", savedCustomRatio)
+          }
+        } else {
+          // Apply saved standard aspect mode (Fit, Crop, or Stretch)
+          _videoAspect.value = savedAspect
+          _currentAspectRatio.value = -1.0
+          runCatching {
+            when (savedAspect) {
+              VideoAspect.Fit -> {
+                MPVLib.setPropertyString("video-crop", "")
+                MPVLib.setPropertyDouble("panscan", 0.0)
+                MPVLib.setPropertyDouble("video-aspect-override", -1.0)
               }
-              MPVLib.setPropertyDouble("video-aspect-override", screenRatio)
-              MPVLib.setPropertyDouble("panscan", 0.0)
+              VideoAspect.Crop -> {
+                MPVLib.setPropertyString("video-crop", "")
+                MPVLib.setPropertyDouble("video-aspect-override", -1.0)
+                MPVLib.setPropertyDouble("panscan", 1.0)
+              }
+              VideoAspect.Stretch -> {
+                MPVLib.setPropertyString("video-crop", "")
+                @Suppress("DEPRECATION")
+                val dm = DisplayMetrics()
+                @Suppress("DEPRECATION")
+                host.hostWindowManager.defaultDisplay.getRealMetrics(dm)
+                val rotate = MPVLib.getPropertyInt("video-params/rotate") ?: 0
+                val isVideoRotated = (rotate % 180 == 90)
+                val screenRatio = if (isVideoRotated) {
+                  dm.heightPixels.toDouble() / dm.widthPixels.toDouble()
+                } else {
+                  dm.widthPixels.toDouble() / dm.heightPixels.toDouble()
+                }
+                MPVLib.setPropertyDouble("video-aspect-override", screenRatio)
+                MPVLib.setPropertyDouble("panscan", 0.0)
+              }
+              VideoAspect.Custom -> {
+                val customCrop = playerPreferences.customCropAspectRatio.get()
+                applyCropForRatio(customCrop)
+              }
             }
           }
         }
@@ -604,6 +696,51 @@ class PlayerViewModel(
   fun toggleSubtitle(id: Int) {
     val primarySid = getPrimarySubtitleId()
     val secondarySid = getSecondarySubtitleId()
+
+    val tracks = subtitleTracks.value
+    val clickedTrack = tracks.firstOrNull { it.id == id }
+
+    // If user clicked a bilingual primary track [中]
+    if (clickedTrack?.title?.startsWith("[中]") == true) {
+      if (id == primarySid) {
+        // Toggle off both
+        MPVLib.setPropertyString("sid", "no")
+        MPVLib.setPropertyString("secondary-sid", "no")
+      } else {
+        MPVLib.setPropertyInt("sid", id)
+        val pairedSec = tracks.firstOrNull {
+          it.title?.startsWith("[英]") == true &&
+            it.title.removePrefix("[英]").trim() == clickedTrack.title.removePrefix("[中]").trim()
+        } ?: tracks.firstOrNull { it.title?.startsWith("[英]") == true }
+        if (pairedSec != null) {
+          MPVLib.setPropertyInt("secondary-sid", pairedSec.id)
+          applySecondarySubStyleOverrides(subtitlesPreferences)
+        }
+      }
+      return
+    }
+
+    // If user clicked a bilingual secondary track [英]
+    if (clickedTrack?.title?.startsWith("[英]") == true) {
+      if (id == secondarySid) {
+        MPVLib.setPropertyString("secondary-sid", "no")
+      } else {
+        MPVLib.setPropertyInt("secondary-sid", id)
+        applySecondarySubStyleOverrides(subtitlesPreferences)
+      }
+      return
+    }
+
+    // If user clicked original fallback [原版]
+    if (clickedTrack?.title?.startsWith("[原版]") == true) {
+      MPVLib.setPropertyString("secondary-sid", "no")
+      if (id == primarySid) {
+        MPVLib.setPropertyString("sid", "no")
+      } else {
+        MPVLib.setPropertyInt("sid", id)
+      }
+      return
+    }
 
     when {
       id == primarySid -> {
@@ -948,22 +1085,72 @@ class PlayerViewModel(
 
   // ==================== Video Aspect ====================
 
+  fun applyCropForRatio(targetRatio: Double) {
+    if (targetRatio <= 0) {
+      MPVLib.setPropertyString("video-crop", "")
+      MPVLib.setPropertyDouble("panscan", 0.0)
+      MPVLib.setPropertyDouble("video-aspect-override", -1.0)
+      return
+    }
+    val vidW = MPVLib.getPropertyInt("video-params/w") ?: 0
+    val vidH = MPVLib.getPropertyInt("video-params/h") ?: 0
+    if (vidW <= 0 || vidH <= 0) {
+      MPVLib.setPropertyString("video-crop", "")
+      MPVLib.setPropertyDouble("panscan", 0.0)
+      MPVLib.setPropertyDouble("video-aspect-override", -1.0)
+      return
+    }
+
+    val rotate = MPVLib.getPropertyInt("video-params/rotate") ?: 0
+    val isRotated = (rotate % 180 == 90)
+    val effectiveTargetRatio = if (isRotated) (1.0 / targetRatio) else targetRatio
+    val currentRatio = vidW.toDouble() / vidH.toDouble()
+
+    val cropW: Int
+    val cropH: Int
+    val offsetX: Int
+    val offsetY: Int
+
+    if (currentRatio > effectiveTargetRatio) {
+      // Video is wider than target ratio (e.g. 19.5:9 cropped to 16:9):
+      // Crop left and right sides symmetrically, replacing them with black bars!
+      cropH = vidH
+      cropW = (((vidH * effectiveTargetRatio).toInt()) / 2) * 2
+      offsetX = ((vidW - cropW) / 4) * 2
+      offsetY = 0
+    } else {
+      // Video is taller/narrower than target ratio:
+      // Crop top and bottom sides symmetrically, replacing them with black bars!
+      cropW = vidW
+      cropH = (((vidW / effectiveTargetRatio).toInt()) / 2) * 2
+      offsetX = 0
+      offsetY = ((vidH - cropH) / 4) * 2
+    }
+
+    MPVLib.setPropertyDouble("panscan", 0.0)
+    MPVLib.setPropertyDouble("video-aspect-override", -1.0)
+    MPVLib.setPropertyString("video-crop", "${cropW}x${cropH}+${offsetX}+${offsetY}")
+  }
+
   fun changeVideoAspect(
     aspect: VideoAspect,
     showUpdate: Boolean = true,
   ) {
     when (aspect) {
       VideoAspect.Fit -> {
-        // To FIT: Reset both properties to their defaults.
+        // To FIT: Reset all crop/override properties to their defaults.
+        MPVLib.setPropertyString("video-crop", "")
         MPVLib.setPropertyDouble("panscan", 0.0)
         MPVLib.setPropertyDouble("video-aspect-override", -1.0)
       }
       VideoAspect.Crop -> {
-        // To CROP: Reset aspect override first, then set panscan
+        // To CROP: Reset aspect override and custom crop first, then set panscan
+        MPVLib.setPropertyString("video-crop", "")
         MPVLib.setPropertyDouble("video-aspect-override", -1.0)
         MPVLib.setPropertyDouble("panscan", 1.0)
       }
       VideoAspect.Stretch -> {
+        MPVLib.setPropertyString("video-crop", "")
         // To STRETCH: Calculate screen ratio accounting for video rotation
         @Suppress("DEPRECATION")
         val dm = DisplayMetrics()
@@ -988,13 +1175,19 @@ class PlayerViewModel(
         MPVLib.setPropertyDouble("video-aspect-override", screenRatio)
         MPVLib.setPropertyDouble("panscan", 0.0)
       }
+      VideoAspect.Custom -> {
+        val targetRatio = playerPreferences.customCropAspectRatio.get()
+        applyCropForRatio(targetRatio)
+      }
     }
 
     // Update the state and persist to preferences
     _videoAspect.value = aspect
-    _currentAspectRatio.value = -1.0 // Reset custom ratio when using standard modes
-    playerPreferences.defaultVideoAspect.set(aspect)
-    playerPreferences.defaultCustomAspectRatio.set(-1.0)
+    _currentAspectRatio.value = if (aspect == VideoAspect.Custom) playerPreferences.customCropAspectRatio.get() else -1.0
+    if (playerPreferences.rememberAspectRatio.get()) {
+      playerPreferences.defaultVideoAspect.set(aspect)
+      playerPreferences.defaultCustomAspectRatio.set(-1.0)
+    }
 
     // Notify the UI
     if (showUpdate) {
@@ -1002,11 +1195,22 @@ class PlayerViewModel(
     }
   }
 
+  fun setCustomCropRatio(ratio: Double, text: String = "") {
+    playerPreferences.customCropAspectRatio.set(ratio)
+    if (text.isNotBlank()) {
+      playerPreferences.customCropAspectRatioText.set(text)
+    }
+    changeVideoAspect(VideoAspect.Custom)
+  }
+
   fun setCustomAspectRatio(ratio: Double) {
+    MPVLib.setPropertyString("video-crop", "")
     MPVLib.setPropertyDouble("panscan", 0.0)
     MPVLib.setPropertyDouble("video-aspect-override", ratio)
     _currentAspectRatio.value = ratio
-    playerPreferences.defaultCustomAspectRatio.set(ratio)
+    if (playerPreferences.rememberAspectRatio.get()) {
+      playerPreferences.defaultCustomAspectRatio.set(ratio)
+    }
     playerUpdate.value = PlayerUpdates.AspectRatio
   }
 

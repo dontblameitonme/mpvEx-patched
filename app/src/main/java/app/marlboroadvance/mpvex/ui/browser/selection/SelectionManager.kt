@@ -157,6 +157,7 @@ class SelectionManager<T, ID>(
       val intent = Intent(Intent.ACTION_VIEW, videos.first().uri)
       intent.setClass(context, PlayerActivity::class.java)
       intent.putExtra("internal_launch", true)
+      intent.putExtra("file_path", videos.first().path)
       intent.putParcelableArrayListExtra("playlist", ArrayList(videos.map { it.uri }))
       intent.putExtra("playlist_index", 0)
       intent.putExtra("launch_source", "playlist")

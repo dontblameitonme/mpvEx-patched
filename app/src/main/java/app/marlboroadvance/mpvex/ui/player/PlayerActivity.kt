@@ -47,6 +47,8 @@ import app.marlboroadvance.mpvex.ui.player.controls.PlayerControls
 import app.marlboroadvance.mpvex.ui.theme.MpvexTheme
 import app.marlboroadvance.mpvex.utils.history.RecentlyPlayedOps
 import app.marlboroadvance.mpvex.utils.media.HttpUtils
+import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
+import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import app.marlboroadvance.mpvex.utils.media.SubtitleOps
 import app.marlboroadvance.mpvex.utils.storage.FileTypeUtils
 import app.marlboroadvance.mpvex.utils.storage.FileFilterUtils
@@ -55,11 +57,13 @@ import `is`.xyz.mpv.MPVLib
 import `is`.xyz.mpv.MPVNode
 import `is`.xyz.mpv.Utils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
 import java.io.File
+import kotlin.math.roundToInt
 
 /**
  * Main player activity that handles video playback using the MPV library.
@@ -1118,7 +1122,54 @@ class PlayerActivity :
         val flag = if (subsToEnable.any { it == suburi }) "select" else "auto"
 
         Log.v(TAG, "Adding subtitles from intent extras: $subfile")
-        MPVLib.command("sub-add", subfile, flag)
+        val file = if (subfile.startsWith("/")) File(subfile) else null
+        val splitResult = file?.let {
+          runCatching { BilingualSubtitleParser.splitIfBilingual(it, this@PlayerActivity) }.getOrNull()
+        } ?: runCatching {
+          BilingualSubtitleParser.splitIfBilingual(suburi, this@PlayerActivity)
+        }.getOrNull()
+
+        if (splitResult != null) {
+          MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, flag, "[中] ${splitResult.primaryTitle}")
+          MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", "[英] ${splitResult.secondaryTitle}")
+          MPVLib.command("sub-add", subfile, "auto", "[原版] ${file?.name ?: suburi.lastPathSegment}")
+
+          if (flag == "select") {
+            var priId: Int? = null
+            var secId: Int? = null
+            for (attempt in 0 until 30) {
+              delay(50)
+              val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+              for (i in 0 until count) {
+                val type = MPVLib.getPropertyString("track-list/$i/type")
+                if (type != "sub") continue
+                val extPath = MPVLib.getPropertyString("track-list/$i/external-filename") ?: ""
+                val title = MPVLib.getPropertyString("track-list/$i/title") ?: ""
+                val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
+
+                if (id > 0) {
+                  if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
+                    priId = id
+                  }
+                  if (extPath == splitResult.secondaryFile.absolutePath || title.startsWith("[英]")) {
+                    secId = id
+                  }
+                }
+              }
+              if (priId != null && secId != null) break
+            }
+
+            if (priId != null) {
+              MPVLib.setPropertyInt("sid", priId)
+            }
+            if (secId != null) {
+              MPVLib.setPropertyInt("secondary-sid", secId)
+              applySecondarySubStyleOverrides(subtitlesPreferences)
+            }
+          }
+        } else {
+          MPVLib.command("sub-add", subfile, flag)
+        }
       }
     }
   }
@@ -1218,11 +1269,12 @@ class PlayerActivity :
    * @return The resolved file path, or null if not found
    */
   private fun parsePathFromIntent(intent: Intent): String? =
-    when (intent.action) {
-      Intent.ACTION_VIEW -> intent.data?.resolveUri(this)
-      Intent.ACTION_SEND -> parsePathFromSendIntent(intent)
-      else -> intent.getStringExtra("uri")
-    }
+    intent.getStringExtra("file_path")?.takeIf { File(it).exists() }
+      ?: when (intent.action) {
+        Intent.ACTION_VIEW -> intent.data?.getRealFilePath(this) ?: intent.data?.resolveUri(this)
+        Intent.ACTION_SEND -> parsePathFromSendIntent(intent)
+        else -> intent.getStringExtra("uri")
+      }
 
   /**
    * Parses the file path from a SEND intent.
@@ -1448,6 +1500,13 @@ class PlayerActivity :
 
         // Re-apply Anime4K shaders (check for resolution limit)
         player.applyAnime4KShaders()
+
+        if (viewModel.videoAspect.value == VideoAspect.Custom) {
+          val customCrop = playerPreferences.customCropAspectRatio.get()
+          if (customCrop > 0) {
+            viewModel.applyCropForRatio(customCrop)
+          }
+        }
       }
     }
   }
@@ -1616,7 +1675,7 @@ class PlayerActivity :
     property: String,
     value: String,
   ) {
-    // Currently no String properties are handled
+    // String properties handled as needed
   }
 
   /**
@@ -1626,7 +1685,7 @@ class PlayerActivity :
    * @param property The property name that changed
    */
   internal fun onObserverEvent(property: String) {
-    // Currently no properties use this signature
+    // Properties handled as needed
   }
 
   /**
@@ -1684,6 +1743,28 @@ class PlayerActivity :
       // Load playback state (will skip track restoration if preferred language configured)
       val hasState = loadVideoPlaybackState(fileName)
 
+      // If autoloading subtitles is enabled, discover/split/add them first so tracks exist in mpv
+      if (subtitlesPreferences.autoloadMatchingSubtitles.get()) {
+        val networkFilePath = intent.getStringExtra("network_file_path")
+        val networkConnectionId = intent.getLongExtra("network_connection_id", -1L)
+
+        if (networkFilePath != null && networkConnectionId != -1L) {
+          SubtitleOps.autoloadSubtitles(
+            videoFilePath = networkFilePath,
+            videoFileName = fileName,
+            networkConnectionId = networkConnectionId,
+          )
+        } else {
+          val filePath = parsePathFromIntent(intent)
+          if (filePath != null) {
+            SubtitleOps.autoloadSubtitles(
+              videoFilePath = filePath,
+              videoFileName = fileName,
+            )
+          }
+        }
+      }
+
       // Apply track selection logic (defaults only apply when no saved state)
       trackSelector.onFileLoaded(hasState)
 
@@ -1696,17 +1777,28 @@ class PlayerActivity :
         }
       }
 
-      // Apply saved aspect ratio setting
+      // Apply aspect ratio setting
       withContext(Dispatchers.Main) {
-        val savedAspect = playerPreferences.defaultVideoAspect.get()
-        val savedCustomRatio = playerPreferences.defaultCustomAspectRatio.get()
-        
-        if (savedCustomRatio > 0) {
-          // Apply custom aspect ratio
-          viewModel.setCustomAspectRatio(savedCustomRatio)
+        if (!playerPreferences.rememberAspectRatio.get()) {
+          viewModel.changeVideoAspect(VideoAspect.Fit, showUpdate = false)
         } else {
-          // Apply standard aspect mode (Fit, Crop, or Stretch)
-          viewModel.changeVideoAspect(savedAspect, showUpdate = false)
+          val savedAspect = playerPreferences.defaultVideoAspect.get()
+          val savedCustomRatio = playerPreferences.defaultCustomAspectRatio.get()
+          
+          if (savedAspect == VideoAspect.Custom) {
+            val customCrop = playerPreferences.customCropAspectRatio.get()
+            if (customCrop > 0) {
+              viewModel.changeVideoAspect(VideoAspect.Custom, showUpdate = false)
+            } else {
+              viewModel.changeVideoAspect(VideoAspect.Fit, showUpdate = false)
+            }
+          } else if (savedCustomRatio > 0) {
+            // Apply custom aspect ratio
+            viewModel.setCustomAspectRatio(savedCustomRatio)
+          } else {
+            // Apply standard aspect mode (Fit, Crop, or Stretch)
+            viewModel.changeVideoAspect(savedAspect, showUpdate = false)
+          }
         }
       }
     }
@@ -1755,32 +1847,6 @@ class PlayerActivity :
     }
 
     viewModel.unpause()
-
-    if (subtitlesPreferences.autoloadMatchingSubtitles.get()) {
-      lifecycleScope.launch {
-        // For network files played via proxy (SMB/WebDAV/FTP), use the original network file path
-        val networkFilePath = intent.getStringExtra("network_file_path")
-        val networkConnectionId = intent.getLongExtra("network_connection_id", -1L)
-
-        if (networkFilePath != null && networkConnectionId != -1L) {
-          // Pass network file path and connection ID for subtitle discovery
-          SubtitleOps.autoloadSubtitles(
-            videoFilePath = networkFilePath,
-            videoFileName = fileName,
-            networkConnectionId = networkConnectionId,
-          )
-        } else {
-          // Regular file or direct network stream
-          val filePath = parsePathFromIntent(intent)
-          if (filePath != null) {
-            SubtitleOps.autoloadSubtitles(
-              videoFilePath = filePath,
-              videoFileName = fileName,
-            )
-          }
-        }
-      }
-    }
 
     updateMediaSessionMetadata(
       title = fileName,
@@ -1934,34 +2000,42 @@ class PlayerActivity :
    * This ensures subtitle customizations (font, colors, position, etc.) persist across videos.
    */
   private fun applySubtitlePreferences() {
-    // Typography settings
+    // Primary Typography settings
     MPVLib.setPropertyString("sub-font", subtitlesPreferences.font.get())
-    MPVLib.setPropertyString("secondary-sub-font", subtitlesPreferences.font.get())
     MPVLib.setPropertyInt("sub-font-size", subtitlesPreferences.fontSize.get())
     MPVLib.setPropertyBoolean("sub-bold", subtitlesPreferences.bold.get())
     MPVLib.setPropertyBoolean("sub-italic", subtitlesPreferences.italic.get())
     MPVLib.setPropertyString("sub-justify", subtitlesPreferences.justification.get().value)
     MPVLib.setPropertyString("sub-border-style", subtitlesPreferences.borderStyle.get().value)
-    MPVLib.setPropertyInt("sub-outline-size", subtitlesPreferences.borderSize.get())
+    MPVLib.setPropertyFloat("sub-outline-size", subtitlesPreferences.borderSize.get())
+    MPVLib.setPropertyFloat("sub-border-size", subtitlesPreferences.borderSize.get())
     MPVLib.setPropertyInt("sub-shadow-offset", subtitlesPreferences.shadowOffset.get())
+    MPVLib.setPropertyFloat("sub-scale", subtitlesPreferences.subScale.get())
+    MPVLib.setPropertyInt("sub-pos", subtitlesPreferences.subPos.get())
+    MPVLib.setPropertyInt("sub-line-spacing", subtitlesPreferences.subSpacing.get())
+    MPVLib.setPropertyInt("sub-ass-line-spacing", subtitlesPreferences.subSpacing.get())
 
-    // Color settings
+    // Primary Color settings
     MPVLib.setPropertyString("sub-color", subtitlesPreferences.textColor.get().toColorHexString())
     MPVLib.setPropertyString("sub-border-color", subtitlesPreferences.borderColor.get().toColorHexString())
     MPVLib.setPropertyString("sub-back-color", subtitlesPreferences.backgroundColor.get().toColorHexString())
 
+    // Secondary Subtitle settings (using dedicated Secondary ASS style overrides)
+    applySecondarySubStyleOverrides(subtitlesPreferences)
+
     // Miscellaneous settings
-    val overrideAssSubs = subtitlesPreferences.overrideAssSubs.get()
-    MPVLib.setPropertyString("sub-ass-override", if (overrideAssSubs) "force" else "scale")
-    MPVLib.setPropertyString("secondary-sub-ass-override", if (overrideAssSubs) "force" else "scale")
+    val assOverrideMode = subtitlesPreferences.overrideAssSubs.get().value
+    MPVLib.setPropertyString("sub-ass-override", assOverrideMode)
+    if (assOverrideMode == "force" || assOverrideMode == "strip") {
+      MPVLib.setPropertyBoolean("sub-ass-justify", true)
+    }
 
     val scaleByWindow = subtitlesPreferences.scaleByWindow.get()
     val scaleValue = if (scaleByWindow) "yes" else "no"
     MPVLib.setPropertyString("sub-scale-by-window", scaleValue)
     MPVLib.setPropertyString("sub-use-margins", scaleValue)
-
-    MPVLib.setPropertyFloat("sub-scale", subtitlesPreferences.subScale.get())
-    MPVLib.setPropertyInt("sub-pos", subtitlesPreferences.subPos.get())
+    MPVLib.setPropertyString("secondary-sub-scale-by-window", scaleValue)
+    MPVLib.setPropertyString("secondary-sub-use-margins", scaleValue)
 
     Log.d(TAG, "Applied subtitle preferences")
   }

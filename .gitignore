@@ -3,7 +3,10 @@
 /local.properties
 .idea
 .DS_Store
+build/
+**/build/
 /build
+app/build/
 /captures
 .externalNativeBuild
 .cxx
@@ -14,3 +17,4 @@ app/release
 /app/fdroid/
 /app/playstore/
 .kotlin/
+jni/

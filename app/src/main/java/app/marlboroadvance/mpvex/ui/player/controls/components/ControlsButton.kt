@@ -31,6 +31,9 @@ import app.marlboroadvance.mpvex.ui.player.controls.LocalPlayerButtonsClickEvent
 import app.marlboroadvance.mpvex.ui.theme.spacing
 import org.koin.compose.koinInject
 
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+
 @Suppress("ModifierClickableOrder")
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -77,6 +80,62 @@ fun ControlsButton(
   ) {
     Icon(
       imageVector = icon,
+      contentDescription = title,
+      tint = color ?: MaterialTheme.colorScheme.onSurface,
+      modifier =
+        Modifier
+          .padding(MaterialTheme.spacing.small)
+          .size(20.dp),
+    )
+  }
+}
+
+@Suppress("ModifierClickableOrder")
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun ControlsButton(
+  painter: Painter,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+  onLongClick: () -> Unit = {},
+  title: String? = null,
+  color: Color? = null,
+) {
+  val interactionSource = remember { MutableInteractionSource() }
+  val appearancePreferences = koinInject<AppearancePreferences>()
+  val hideBackground by appearancePreferences.hidePlayerButtonsBackground.collectAsState()
+
+  val clickEvent = LocalPlayerButtonsClickEvent.current
+  Surface(
+    modifier =
+      modifier
+        .clip(CircleShape)
+        .combinedClickable(
+          onClick = {
+            clickEvent()
+            onClick()
+          },
+          onLongClick = onLongClick,
+          interactionSource = interactionSource,
+          indication = ripple(),
+        ),
+    shape = CircleShape,
+    color = if (hideBackground) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.55f),
+    contentColor = color ?: MaterialTheme.colorScheme.onSurface,
+    tonalElevation = 0.dp,
+    shadowElevation = 0.dp,
+    border =
+      if (hideBackground) {
+        null
+      } else {
+        BorderStroke(
+          1.dp,
+          MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+        )
+      },
+  ) {
+    Icon(
+      painter = painter,
       contentDescription = title,
       tint = color ?: MaterialTheme.colorScheme.onSurface,
       modifier =

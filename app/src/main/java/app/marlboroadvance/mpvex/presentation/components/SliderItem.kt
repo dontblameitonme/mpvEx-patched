@@ -49,7 +49,7 @@ fun SliderItem(
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
   ) {
     icon()
-    Column(modifier = Modifier.weight(0.5f)) {
+    Column(modifier = Modifier.weight(0.65f)) {
       Text(
         text = label,
         style = MaterialTheme.typography.bodyMedium,
@@ -66,7 +66,7 @@ fun SliderItem(
           haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
       },
-      modifier = Modifier.weight(1.5f),
+      modifier = Modifier.weight(1.35f),
       valueRange = min.toFloat()..max.toFloat(),
       steps = max - min,
     )
@@ -99,7 +99,7 @@ fun SliderItem(
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.large),
   ) {
     icon()
-    Column(modifier = Modifier.weight(0.5f)) {
+    Column(modifier = Modifier.weight(0.65f)) {
       Text(
         text = label,
         style = MaterialTheme.typography.bodyMedium,
@@ -116,7 +116,7 @@ fun SliderItem(
           haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
       },
-      modifier = Modifier.weight(1.5f),
+      modifier = Modifier.weight(1.35f),
       valueRange = min..max,
       steps = steps,
     )
