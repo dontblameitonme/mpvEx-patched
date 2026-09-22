@@ -59,3 +59,22 @@
   * **[SliderItem.kt](app/src/main/java/app/marlboroadvance/mpvex/presentation/components/SliderItem.kt)**: Augmented with `onLongClick` support. Long-pressing the leading label, icon, or value area generates haptic feedback and triggers the fine-tuning dialog.
   * **[BilingualSubtitleParser.kt](app/src/main/java/app/marlboroadvance/mpvex/utils/media/BilingualSubtitleParser.kt)**: Overcame mpv's integer `sub-pos` constraint by translating sub-percentage fractional offsets (`diff = secPos - round(secPos)`) directly into `Secondary.MarginV` overrides in standard ASS pixels (`pixelOffset = -(diff * 10.8f).roundToInt()`), unlocking true sub-pixel/pixel-level physical subtitle movement on screen.
   * **Preferences & UI Panels**: Upgraded `sub_pos` and `secondary_sub_pos` in [SubtitlesPreferences.kt](app/src/main/java/app/marlboroadvance/mpvex/preferences/SubtitlesPreferences.kt) to `Float` with automatic migration. Added dedicated secondary subtitle position and spacing sliders with 0.1 fine-tuning in [SubtitleSettingsMiscellaneousCard.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/components/panels/SubtitleSettingsMiscellaneousCard.kt) and [SecondarySubtitleSettingsCard.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/components/panels/SecondarySubtitleSettingsCard.kt).
+
+### 6. Flowing Single-Track Bilingual Subtitles & Independent Single/Multi-Language Toggle
+* **Background & Multi-Line Collision Problem**:
+  * In standard dual-track rendering (`sid` + `secondary-sid`), libmpv's two OSD rendering pipelines are completely isolated from each other.
+  * When subtitles are bottom-aligned (`Alignment 2`), multi-line text grows upwards towards the center of the screen. When the secondary subtitle has 2 lines while the primary subtitle is positioned above it, the top line of the secondary subtitle collides and completely overlaps with the primary subtitle.
+* **Implementation & Solution**:
+  * **Unified Flowing Paragraph Layout (Solution 1)** in [BilingualSubtitleParser.kt](app/src/main/java/app/marlboroadvance/mpvex/utils/media/BilingualSubtitleParser.kt):
+    * Synthesizes bilingual dialogue events within a single ASS track using the in-event style switch tag `\N{\rSecondary}`:
+      `Dialogue: 0,start,end,Default,,0,0,0,,<PrimaryText>\N{\rSecondary}<SecondaryText>`
+    * Primary text renders under `Default` style; secondary text switches to `Secondary` style.
+    * libass treats them as a single flowing text block, dynamically calculating paragraph bounding boxes. Whether Chinese has 2 lines or English has 2 lines or both, libass stacks the lines smoothly with zero collision.
+    * Overrides via `sub-ass-style-overrides=Secondary.*` continue to control font, color, bold, border, etc. with 100% independence.
+  * **Independent Single / Multi-Language Subtitle Toggle**:
+    * **[SubtitleTracksSheet.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/controls/components/sheets/SubtitleTracksSheet.kt)**: Added a Material 3 `SingleChoiceSegmentedButtonRow` with `[Single Subtitle]` and `[Dual Subtitles]` tabs at the top of the track selector sheet.
+    * **State & Track Independence**: Single-language mode selection and Multi-language mode combinations maintain separate memory states in [PlayerViewModel.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/player/PlayerViewModel.kt). Switching back and forth seamlessly switches active tracks without losing selections.
+    * **Single Mode**: Renders standard radio-style single selection, clears `secondary-sid`, and loads pure single-language tracks (`[中]` or `[英]`).
+    * **Multi Mode**: Automatically activates the non-overlapping bilingual stream (`[双语]`) or allows paired dual-track selection with visual role badges (`[Primary]`, `[Secondary]`, `[Bilingual]`).
+    * **Global Default Configuration**: Added `subtitleMode` to [SubtitlesPreferences.kt](app/src/main/java/app/marlboroadvance/mpvex/preferences/SubtitlesPreferences.kt) and [SubtitlesPreferencesScreen.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/preferences/SubtitlesPreferencesScreen.kt) allowing users to configure their preferred default startup mode.
+

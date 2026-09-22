@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="player_sheets_sub_mode_title">默认字幕模式</string>
+  <string name="player_sheets_sub_mode_single">单语言</string>
+  <string name="player_sheets_sub_mode_multi">多语言 (双语)</string>
+  <string name="player_sheets_sub_role_primary">主字幕</string>
+  <string name="player_sheets_sub_role_secondary">第二字幕</string>
+  <string name="player_sheets_sub_role_bilingual">双语流</string>
+</resources>

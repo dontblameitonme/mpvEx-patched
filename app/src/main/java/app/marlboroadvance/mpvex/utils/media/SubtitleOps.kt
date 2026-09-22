@@ -222,13 +222,15 @@ object SubtitleOps : KoinComponent {
           }.getOrNull()
 
           if (splitResult != null) {
-            val priFlag = if (isDefault) "select" else "auto"
-            MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, priFlag, "[中] ${subtitle.name}")
+            MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
+            MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", "[中] ${subtitle.name}")
             MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", splitResult.secondaryTitle)
             // Also keep original untouched subtitle as fallback
             MPVLib.command("sub-add", subtitle.absolutePath, "auto", "[原版] ${subtitle.name}")
 
             if (isDefault) {
+              val mode = subtitlesPreferences.subtitleMode.get()
+              var biId: Int? = null
               var priId: Int? = null
               var secId: Int? = null
               for (attempt in 0 until 30) {
@@ -242,6 +244,9 @@ object SubtitleOps : KoinComponent {
                   val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
 
                   if (id > 0) {
+                    if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
+                      biId = id
+                    }
                     if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
                       priId = id
                     }
@@ -250,20 +255,36 @@ object SubtitleOps : KoinComponent {
                     }
                   }
                 }
-                if (priId != null && secId != null) break
+                if (biId != null && priId != null && secId != null) break
               }
 
-              if (priId != null) {
-                MPVLib.setPropertyInt("sid", priId)
-                hasSelectedPrimary = true
-              }
-              if (secId != null) {
-                MPVLib.setPropertyInt("secondary-sid", secId)
-                applySecondarySubStyleOverrides(subtitlesPreferences)
-                Log.d(TAG, "Autoload bilingual subtitle active: sid=$priId, secondary-sid=$secId")
+              if (mode == app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) {
+                // In Multi Mode: activate Solution 1 unified bilingual stream
+                if (biId != null) {
+                  MPVLib.setPropertyInt("sid", biId)
+                  MPVLib.setPropertyString("secondary-sid", "no")
+                  applySecondarySubStyleOverrides(subtitlesPreferences)
+                  hasSelectedPrimary = true
+                  Log.d(TAG, "Autoload bilingual subtitle active: sid=$biId ([双语])")
+                } else if (priId != null) {
+                  MPVLib.setPropertyInt("sid", priId)
+                  if (secId != null) {
+                    MPVLib.setPropertyInt("secondary-sid", secId)
+                    applySecondarySubStyleOverrides(subtitlesPreferences)
+                  }
+                  hasSelectedPrimary = true
+                }
+              } else {
+                // In Single Mode: activate pure primary track, secondary disabled
+                if (priId != null) {
+                  MPVLib.setPropertyInt("sid", priId)
+                  MPVLib.setPropertyString("secondary-sid", "no")
+                  hasSelectedPrimary = true
+                  Log.d(TAG, "Autoload single subtitle active: sid=$priId ([中])")
+                }
               }
             }
-            Log.d(TAG, "Autoloaded bilingual subtitle: ${subtitle.name} -> split into primary & secondary")
+            Log.d(TAG, "Autoloaded bilingual subtitle: ${subtitle.name} -> loaded bilingual, primary & secondary")
           } else {
             // MPV command format: sub-add <url> [<flags> [<title>]]
             // Use "select" for the first autoloaded subtitle so it is enabled by default

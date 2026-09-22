@@ -214,6 +214,32 @@ object SubtitlesPreferencesScreen : Screen {
 
               PreferenceDivider()
 
+              val subtitleMode by preferences.subtitleMode.collectAsState()
+              ListPreference(
+                value = subtitleMode,
+                onValueChange = preferences.subtitleMode::set,
+                values = app.marlboroadvance.mpvex.preferences.SubtitleMode.entries,
+                valueToText = {
+                  AnnotatedString(
+                    if (it == app.marlboroadvance.mpvex.preferences.SubtitleMode.Single)
+                      context.getString(R.string.player_sheets_sub_mode_single)
+                    else
+                      context.getString(R.string.player_sheets_sub_mode_multi)
+                  )
+                },
+                title = { Text(stringResource(R.string.player_sheets_sub_mode_title)) },
+                summary = {
+                  Text(
+                    if (subtitleMode == app.marlboroadvance.mpvex.preferences.SubtitleMode.Single)
+                      stringResource(R.string.player_sheets_sub_mode_single)
+                    else
+                      stringResource(R.string.player_sheets_sub_mode_multi),
+                    color = MaterialTheme.colorScheme.outline,
+                  )
+                },
+                type = ListPreferenceType.DROPDOWN_MENU,
+              )
+
               val overrideAss by preferences.overrideAssSubs.collectAsState()
               ListPreference(
                 value = overrideAss,

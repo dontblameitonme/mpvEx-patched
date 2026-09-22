@@ -17,23 +17,35 @@ import app.marlboroadvance.mpvex.ui.theme.spacing
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
+
 sealed class SubtitleItem {
   data class Track(val node: TrackNode) : SubtitleItem()
   data class Header(val title: String) : SubtitleItem()
   object Divider : SubtitleItem()
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SubtitlesSheet(
   tracks: ImmutableList<TrackNode>,
+  subtitleMode: SubtitleMode,
+  onSubtitleModeChange: (SubtitleMode) -> Unit,
   onToggleSubtitle: (Int) -> Unit,
   isSubtitleSelected: (Int) -> Boolean,
+  getSubtitleRole: (Int) -> String?,
   onAddSubtitle: () -> Unit,
   onOpenSubtitleSettings: () -> Unit,
   onOpenSubtitleDelay: () -> Unit,
   onRemoveSubtitle: (Int) -> Unit,
   onDismissRequest: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
 ) {
   val items = remember(tracks) {
     val list = mutableListOf<SubtitleItem>()
@@ -58,18 +70,40 @@ fun SubtitlesSheet(
     tracks = items,
     onDismissRequest = onDismissRequest,
     header = {
-      AddTrackRow(
-        stringResource(R.string.player_sheets_add_ext_sub),
-        onAddSubtitle,
-        actions = {
-          IconButton(onClick = onOpenSubtitleSettings) {
-            Icon(Icons.Default.Palette, null)
+      Column {
+        AddTrackRow(
+          stringResource(R.string.player_sheets_add_ext_sub),
+          onAddSubtitle,
+          actions = {
+            IconButton(onClick = onOpenSubtitleSettings) {
+              Icon(Icons.Default.Palette, null)
+            }
+            IconButton(onClick = onOpenSubtitleDelay) {
+              Icon(Icons.Default.MoreTime, null)
+            }
+          },
+        )
+        SingleChoiceSegmentedButtonRow(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = MaterialTheme.spacing.medium, vertical = MaterialTheme.spacing.extraSmall),
+        ) {
+          SegmentedButton(
+            selected = subtitleMode == SubtitleMode.Single,
+            onClick = { onSubtitleModeChange(SubtitleMode.Single) },
+            shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+          ) {
+            Text(stringResource(R.string.player_sheets_sub_mode_single))
           }
-          IconButton(onClick = onOpenSubtitleDelay) {
-            Icon(Icons.Default.MoreTime, null)
+          SegmentedButton(
+            selected = subtitleMode == SubtitleMode.Multi,
+            onClick = { onSubtitleModeChange(SubtitleMode.Multi) },
+            shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+          ) {
+            Text(stringResource(R.string.player_sheets_sub_mode_multi))
           }
-        },
-      )
+        }
+      }
     },
     track = { item ->
       when (item) {
@@ -79,6 +113,8 @@ fun SubtitlesSheet(
             title = getTrackTitle(track),
             isSelected = isSubtitleSelected(track.id),
             isExternal = track.external == true,
+            isSingleMode = subtitleMode == SubtitleMode.Single,
+            roleBadge = getSubtitleRole(track.id),
             onToggle = { onToggleSubtitle(track.id) },
             onRemove = { onRemoveSubtitle(track.id) },
           )
@@ -119,6 +155,8 @@ fun SubtitleTrackRow(
   title: String,
   isSelected: Boolean,
   isExternal: Boolean,
+  isSingleMode: Boolean = false,
+  roleBadge: String? = null,
   onToggle: () -> Unit,
   onRemove: () -> Unit,
   modifier: Modifier = Modifier,
@@ -128,8 +166,26 @@ fun SubtitleTrackRow(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.smaller),
   ) {
-    Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
+    if (isSingleMode) {
+      RadioButton(selected = isSelected, onClick = onToggle)
+    } else {
+      Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
+    }
     Text(title, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f))
+    if (roleBadge != null && isSelected) {
+      Surface(
+        shape = MaterialTheme.shapes.extraSmall,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.padding(end = 4.dp),
+      ) {
+        Text(
+          roleBadge,
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onPrimaryContainer,
+          modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+      }
+    }
     if (isExternal) {
       IconButton(onClick = onRemove) { Icon(Icons.Default.Delete, contentDescription = null) }
     }

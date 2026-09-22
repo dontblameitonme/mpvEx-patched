@@ -20,6 +20,7 @@ import app.marlboroadvance.mpvex.R
 import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.GesturePreferences
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
 import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
@@ -437,9 +438,13 @@ class PlayerViewModel(
         }.getOrNull()
 
         if (splitResult != null) {
+          // Add unified bilingual track
+          mpvPathToUriMap[splitResult.bilingualFile.absolutePath] = uri.toString()
+          MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
+
           // Add primary track
           mpvPathToUriMap[splitResult.primaryFile.absolutePath] = uri.toString()
-          MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, mode, "[中] $fileName")
+          MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", "[中] $fileName")
 
           // Add secondary track
           mpvPathToUriMap[splitResult.secondaryFile.absolutePath] = uri.toString()
@@ -451,6 +456,8 @@ class PlayerViewModel(
           MPVLib.command("sub-add", mpvPath, "auto", "[原版] $fileName")
 
           if (select) {
+            val subMode = subtitlesPreferences.subtitleMode.get()
+            var biId: Int? = null
             var priId: Int? = null
             var secId: Int? = null
             for (attempt in 0 until 30) {
@@ -464,6 +471,9 @@ class PlayerViewModel(
                 val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
 
                 if (id > 0) {
+                  if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
+                    biId = id
+                  }
                   if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
                     priId = id
                   }
@@ -472,15 +482,26 @@ class PlayerViewModel(
                   }
                 }
               }
-              if (priId != null && secId != null) break
+              if (biId != null && priId != null && secId != null) break
             }
 
-            if (priId != null) {
-              MPVLib.setPropertyInt("sid", priId)
-            }
-            if (secId != null) {
-              MPVLib.setPropertyInt("secondary-sid", secId)
-              applySecondarySubStyleOverrides(subtitlesPreferences)
+            if (subMode == SubtitleMode.Multi) {
+              if (biId != null) {
+                MPVLib.setPropertyInt("sid", biId)
+                MPVLib.setPropertyString("secondary-sid", "no")
+                applySecondarySubStyleOverrides(subtitlesPreferences)
+              } else if (priId != null) {
+                MPVLib.setPropertyInt("sid", priId)
+                if (secId != null) {
+                  MPVLib.setPropertyInt("secondary-sid", secId)
+                  applySecondarySubStyleOverrides(subtitlesPreferences)
+                }
+              }
+            } else {
+              if (priId != null) {
+                MPVLib.setPropertyInt("sid", priId)
+                MPVLib.setPropertyString("secondary-sid", "no")
+              }
             }
           }
         } else {
@@ -693,27 +714,158 @@ class PlayerViewModel(
     }
   }
 
+  // Memory for independent subtitle selections between Single and Multi modes
+  private var savedSingleTrackId: Int = -1
+  private var savedMultiPrimaryTrackId: Int = -1
+  private var savedMultiSecondaryTrackId: Int = -1
+
+  fun setSubtitleMode(newMode: SubtitleMode) {
+    val oldMode = subtitlesPreferences.subtitleMode.get()
+    if (oldMode == newMode) return
+
+    val currentPri = getPrimarySubtitleId()
+    val currentSec = getSecondarySubtitleId()
+    val tracks = subtitleTracks.value
+    val curTrack = tracks.firstOrNull { it.id == currentPri }
+
+    if (newMode == SubtitleMode.Single) {
+      // Save multi-language state before switching
+      savedMultiPrimaryTrackId = currentPri
+      savedMultiSecondaryTrackId = currentSec
+
+      // Turn off secondary subtitle
+      if (currentSec > 0) {
+        MPVLib.setPropertyString("secondary-sid", "no")
+      }
+
+      // If current track was [双语], switch to the corresponding pure Chinese [中] track
+      if (curTrack?.title?.startsWith("[双语]") == true) {
+        val baseName = curTrack.title.removePrefix("[双语]").trim()
+        val purePriTrack = tracks.firstOrNull { it.title?.startsWith("[中]") == true && it.title.removePrefix("[中]").trim() == baseName }
+          ?: tracks.firstOrNull { it.title?.startsWith("[中]") == true }
+        if (purePriTrack != null) {
+          MPVLib.setPropertyInt("sid", purePriTrack.id)
+          savedSingleTrackId = purePriTrack.id
+        }
+      } else if (savedSingleTrackId > 0 && tracks.any { it.id == savedSingleTrackId }) {
+        MPVLib.setPropertyInt("sid", savedSingleTrackId)
+      }
+    } else {
+      // Save single-language state before switching
+      savedSingleTrackId = currentPri
+
+      // If current single track was [中], switch to corresponding [双语] track
+      if (curTrack?.title?.startsWith("[中]") == true) {
+        val baseName = curTrack.title.removePrefix("[中]").trim()
+        val biTrack = tracks.firstOrNull { it.title?.startsWith("[双语]") == true && it.title.removePrefix("[双语]").trim() == baseName }
+          ?: tracks.firstOrNull { it.title?.startsWith("[双语]") == true }
+        if (biTrack != null) {
+          MPVLib.setPropertyInt("sid", biTrack.id)
+          MPVLib.setPropertyString("secondary-sid", "no")
+          applySecondarySubStyleOverrides(subtitlesPreferences)
+        } else {
+          // Restore saved multi tracks
+          if (savedMultiPrimaryTrackId > 0 && tracks.any { it.id == savedMultiPrimaryTrackId }) {
+            MPVLib.setPropertyInt("sid", savedMultiPrimaryTrackId)
+          }
+          if (savedMultiSecondaryTrackId > 0 && tracks.any { it.id == savedMultiSecondaryTrackId }) {
+            MPVLib.setPropertyInt("secondary-sid", savedMultiSecondaryTrackId)
+            applySecondarySubStyleOverrides(subtitlesPreferences)
+          }
+        }
+      } else {
+        // Restore saved multi tracks
+        if (savedMultiPrimaryTrackId > 0 && tracks.any { it.id == savedMultiPrimaryTrackId }) {
+          MPVLib.setPropertyInt("sid", savedMultiPrimaryTrackId)
+        }
+        if (savedMultiSecondaryTrackId > 0 && tracks.any { it.id == savedMultiSecondaryTrackId }) {
+          MPVLib.setPropertyInt("secondary-sid", savedMultiSecondaryTrackId)
+          applySecondarySubStyleOverrides(subtitlesPreferences)
+        }
+      }
+    }
+
+    subtitlesPreferences.subtitleMode.set(newMode)
+  }
+
+  fun getSubtitleRole(id: Int): String? {
+    val mode = subtitlesPreferences.subtitleMode.get()
+    val primarySid = getPrimarySubtitleId()
+    val secondarySid = getSecondarySubtitleId()
+    val tracks = subtitleTracks.value
+    val track = tracks.firstOrNull { it.id == id }
+
+    if (mode == SubtitleMode.Single) {
+      return null
+    }
+
+    if (track?.title?.startsWith("[双语]") == true && id == primarySid) {
+      return host.context.getString(R.string.player_sheets_sub_role_bilingual)
+    }
+
+    return when (id) {
+      primarySid -> host.context.getString(R.string.player_sheets_sub_role_primary)
+      secondarySid -> host.context.getString(R.string.player_sheets_sub_role_secondary)
+      else -> null
+    }
+  }
+
   fun toggleSubtitle(id: Int) {
+    val currentMode = subtitlesPreferences.subtitleMode.get()
     val primarySid = getPrimarySubtitleId()
     val secondarySid = getSecondarySubtitleId()
 
     val tracks = subtitleTracks.value
     val clickedTrack = tracks.firstOrNull { it.id == id }
 
+    if (currentMode == SubtitleMode.Single) {
+      // Single Language Mode: pure radio selection
+      if (id == primarySid) {
+        MPVLib.setPropertyString("sid", "no")
+        savedSingleTrackId = -1
+      } else {
+        MPVLib.setPropertyInt("sid", id)
+        savedSingleTrackId = id
+      }
+      if (secondarySid > 0) {
+        MPVLib.setPropertyString("secondary-sid", "no")
+      }
+      return
+    }
+
+    // Multi-Language Mode:
+    // If user clicked a unified bilingual track [双语]
+    if (clickedTrack?.title?.startsWith("[双语]") == true) {
+      if (id == primarySid) {
+        MPVLib.setPropertyString("sid", "no")
+        MPVLib.setPropertyString("secondary-sid", "no")
+        savedMultiPrimaryTrackId = -1
+        savedMultiSecondaryTrackId = -1
+      } else {
+        MPVLib.setPropertyInt("sid", id)
+        MPVLib.setPropertyString("secondary-sid", "no")
+        savedMultiPrimaryTrackId = id
+        savedMultiSecondaryTrackId = -1
+        applySecondarySubStyleOverrides(subtitlesPreferences)
+      }
+      return
+    }
+
     // If user clicked a bilingual primary track [中]
     if (clickedTrack?.title?.startsWith("[中]") == true) {
       if (id == primarySid) {
-        // Toggle off both
         MPVLib.setPropertyString("sid", "no")
-        MPVLib.setPropertyString("secondary-sid", "no")
+        savedMultiPrimaryTrackId = -1
       } else {
         MPVLib.setPropertyInt("sid", id)
+        savedMultiPrimaryTrackId = id
         val pairedSec = tracks.firstOrNull {
           it.title?.startsWith("[英]") == true &&
             it.title.removePrefix("[英]").trim() == clickedTrack.title.removePrefix("[中]").trim()
         } ?: tracks.firstOrNull { it.title?.startsWith("[英]") == true }
-        if (pairedSec != null) {
+        if (pairedSec != null && secondarySid <= 0) {
           MPVLib.setPropertyInt("secondary-sid", pairedSec.id)
+          savedMultiSecondaryTrackId = pairedSec.id
           applySecondarySubStyleOverrides(subtitlesPreferences)
         }
       }
@@ -724,8 +876,10 @@ class PlayerViewModel(
     if (clickedTrack?.title?.startsWith("[英]") == true) {
       if (id == secondarySid) {
         MPVLib.setPropertyString("secondary-sid", "no")
+        savedMultiSecondaryTrackId = -1
       } else {
         MPVLib.setPropertyInt("secondary-sid", id)
+        savedMultiSecondaryTrackId = id
         applySecondarySubStyleOverrides(subtitlesPreferences)
       }
       return
@@ -734,53 +888,64 @@ class PlayerViewModel(
     // If user clicked original fallback [原版]
     if (clickedTrack?.title?.startsWith("[原版]") == true) {
       MPVLib.setPropertyString("secondary-sid", "no")
+      savedMultiSecondaryTrackId = -1
       if (id == primarySid) {
         MPVLib.setPropertyString("sid", "no")
+        savedMultiPrimaryTrackId = -1
       } else {
         MPVLib.setPropertyInt("sid", id)
+        savedMultiPrimaryTrackId = id
       }
       return
     }
 
     when {
       id == primarySid -> {
-        // User disabled the primary subtitle while a secondary subtitle is active:
-        // Promote secondary to primary so the single remaining subtitle is positioned at the bottom.
-        // MUST clear secondary-sid FIRST so mpv does not reject assigning it to sid.
         if (secondarySid > 0 && secondarySid != id) {
           MPVLib.setPropertyString("secondary-sid", "no")
           MPVLib.setPropertyInt("sid", secondarySid)
+          savedMultiPrimaryTrackId = secondarySid
+          savedMultiSecondaryTrackId = -1
         } else {
           MPVLib.setPropertyString("sid", "no")
+          savedMultiPrimaryTrackId = -1
         }
       }
       id == secondarySid -> {
-        // User disabled the secondary subtitle (top). Primary stays at bottom.
         MPVLib.setPropertyString("secondary-sid", "no")
+        savedMultiSecondaryTrackId = -1
       }
       primarySid <= 0 -> {
         if (secondarySid > 0) {
           if (secondarySid == id) {
             MPVLib.setPropertyString("secondary-sid", "no")
             MPVLib.setPropertyInt("sid", id)
+            savedMultiPrimaryTrackId = id
+            savedMultiSecondaryTrackId = -1
           } else {
             val prevSecondary = secondarySid
             MPVLib.setPropertyString("secondary-sid", "no")
             MPVLib.setPropertyInt("sid", prevSecondary)
             MPVLib.setPropertyInt("secondary-sid", id)
+            savedMultiPrimaryTrackId = prevSecondary
+            savedMultiSecondaryTrackId = id
+            applySecondarySubStyleOverrides(subtitlesPreferences)
           }
         } else {
           MPVLib.setPropertyInt("sid", id)
+          savedMultiPrimaryTrackId = id
         }
       }
       secondarySid <= 0 -> {
         if (primarySid != id) {
           MPVLib.setPropertyInt("secondary-sid", id)
+          savedMultiSecondaryTrackId = id
+          applySecondarySubStyleOverrides(subtitlesPreferences)
         }
       }
       else -> {
-        // Both slots occupied; replace primary subtitle
         MPVLib.setPropertyInt("sid", id)
+        savedMultiPrimaryTrackId = id
       }
     }
   }
@@ -801,7 +966,12 @@ class PlayerViewModel(
   fun isSubtitleSelected(id: Int): Boolean {
     val primarySid = getPrimarySubtitleId()
     val secondarySid = getSecondarySubtitleId()
-    return (id == primarySid && primarySid > 0) || (id == secondarySid && secondarySid > 0)
+    val mode = subtitlesPreferences.subtitleMode.get()
+    return if (mode == SubtitleMode.Single) {
+      id == primarySid && primarySid > 0
+    } else {
+      (id == primarySid && primarySid > 0) || (id == secondarySid && secondarySid > 0)
+    }
   }
 
   private fun getFileNameFromUri(uri: Uri): String? =

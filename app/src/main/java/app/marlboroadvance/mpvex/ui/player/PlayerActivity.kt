@@ -1131,11 +1131,14 @@ class PlayerActivity :
         }.getOrNull()
 
         if (splitResult != null) {
-          MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, flag, "[中] ${splitResult.primaryTitle}")
+          MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
+          MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", "[中] ${splitResult.primaryTitle}")
           MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", "[英] ${splitResult.secondaryTitle}")
           MPVLib.command("sub-add", subfile, "auto", "[原版] ${file?.name ?: suburi.lastPathSegment}")
 
           if (flag == "select") {
+            val mode = subtitlesPreferences.subtitleMode.get()
+            var biId: Int? = null
             var priId: Int? = null
             var secId: Int? = null
             for (attempt in 0 until 30) {
@@ -1149,6 +1152,9 @@ class PlayerActivity :
                 val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
 
                 if (id > 0) {
+                  if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
+                    biId = id
+                  }
                   if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
                     priId = id
                   }
@@ -1157,15 +1163,26 @@ class PlayerActivity :
                   }
                 }
               }
-              if (priId != null && secId != null) break
+              if (biId != null && priId != null && secId != null) break
             }
 
-            if (priId != null) {
-              MPVLib.setPropertyInt("sid", priId)
-            }
-            if (secId != null) {
-              MPVLib.setPropertyInt("secondary-sid", secId)
-              applySecondarySubStyleOverrides(subtitlesPreferences)
+            if (mode == app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) {
+              if (biId != null) {
+                MPVLib.setPropertyInt("sid", biId)
+                MPVLib.setPropertyString("secondary-sid", "no")
+                applySecondarySubStyleOverrides(subtitlesPreferences)
+              } else if (priId != null) {
+                MPVLib.setPropertyInt("sid", priId)
+                if (secId != null) {
+                  MPVLib.setPropertyInt("secondary-sid", secId)
+                  applySecondarySubStyleOverrides(subtitlesPreferences)
+                }
+              }
+            } else {
+              if (priId != null) {
+                MPVLib.setPropertyInt("sid", priId)
+                MPVLib.setPropertyString("secondary-sid", "no")
+              }
             }
           }
         } else {

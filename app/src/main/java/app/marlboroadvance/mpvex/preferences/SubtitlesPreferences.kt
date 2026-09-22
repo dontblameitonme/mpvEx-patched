@@ -82,6 +82,12 @@ class SubtitlesPreferences(
   val pickerPath = preferenceStore.getString("sub_picker_path")
   
   val subtitleSaveFolder = preferenceStore.getString("sub_save_folder", "")
+  val subtitleMode = preferenceStore.getEnum("sub_mode", SubtitleMode.Multi)
+}
+
+enum class SubtitleMode {
+  Single,
+  Multi,
 }
 
 enum class SubAssOverride(

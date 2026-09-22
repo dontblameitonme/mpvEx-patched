@@ -19,8 +19,10 @@ import kotlin.math.roundToInt
 data class BilingualSplitResult(
   val primaryFile: File,
   val secondaryFile: File,
+  val bilingualFile: File,
   val primaryTitle: String,
   val secondaryTitle: String,
+  val bilingualTitle: String,
   val isBilingual: Boolean = true,
 )
 
@@ -63,21 +65,25 @@ object BilingualSubtitleParser {
     if (!folder.exists()) folder.mkdirs()
 
     val primaryFileName = "[中] ${sourceFile.name}"
-    // Secondary subtitle is strictly generated as ASS format so mpv libass can style it independently
     val secondaryFileName = "[英] ${sourceFile.nameWithoutExtension}.ass"
+    val bilingualFileName = "[双语] ${sourceFile.nameWithoutExtension}.ass"
     val primaryFile = File(folder, primaryFileName)
     val secondaryFile = File(folder, secondaryFileName)
+    val bilingualFile = File(folder, bilingualFileName)
 
     // Cache hit: 0ms execution
     if (primaryFile.exists() && primaryFile.length() > 0 &&
-      secondaryFile.exists() && secondaryFile.length() > 0
+      secondaryFile.exists() && secondaryFile.length() > 0 &&
+      bilingualFile.exists() && bilingualFile.length() > 0
     ) {
       Log.d(TAG, "Cache hit for bilingual subtitle: ${sourceFile.name}")
       return BilingualSplitResult(
         primaryFile = primaryFile,
         secondaryFile = secondaryFile,
+        bilingualFile = bilingualFile,
         primaryTitle = "[中] ${sourceFile.nameWithoutExtension}",
         secondaryTitle = "[英] ${sourceFile.nameWithoutExtension}",
+        bilingualTitle = "[双语] ${sourceFile.nameWithoutExtension}",
       )
     }
 
@@ -85,9 +91,9 @@ object BilingualSubtitleParser {
       val rawBytes = sourceFile.readBytes()
       val content = readTextWithAutoEncoding(rawBytes)
       val result = if (ext == "srt") {
-        splitSrt(content, folder, primaryFile, secondaryFile, sourceFile.nameWithoutExtension)
+        splitSrt(content, folder, primaryFile, secondaryFile, bilingualFile, sourceFile.nameWithoutExtension)
       } else {
-        splitAss(content, folder, primaryFile, secondaryFile, sourceFile.nameWithoutExtension)
+        splitAss(content, folder, primaryFile, secondaryFile, bilingualFile, sourceFile.nameWithoutExtension)
       }
       result
     } catch (e: Exception) {
@@ -115,27 +121,31 @@ object BilingualSubtitleParser {
 
       val baseName = fileName.substringBeforeLast('.')
       val primaryFileName = "[中] $fileName"
-      // Secondary subtitle is strictly generated as ASS format so mpv libass can style it independently
       val secondaryFileName = "[英] $baseName.ass"
+      val bilingualFileName = "[双语] $baseName.ass"
       val primaryFile = File(folder, primaryFileName)
       val secondaryFile = File(folder, secondaryFileName)
+      val bilingualFile = File(folder, bilingualFileName)
 
       if (primaryFile.exists() && primaryFile.length() > 0 &&
-        secondaryFile.exists() && secondaryFile.length() > 0
+        secondaryFile.exists() && secondaryFile.length() > 0 &&
+        bilingualFile.exists() && bilingualFile.length() > 0
       ) {
         return BilingualSplitResult(
           primaryFile = primaryFile,
           secondaryFile = secondaryFile,
+          bilingualFile = bilingualFile,
           primaryTitle = "[中] $baseName",
           secondaryTitle = "[英] $baseName",
+          bilingualTitle = "[双语] $baseName",
         )
       }
 
       val content = readTextWithAutoEncoding(rawBytes)
       if (ext == "srt") {
-        splitSrt(content, folder, primaryFile, secondaryFile, baseName)
+        splitSrt(content, folder, primaryFile, secondaryFile, bilingualFile, baseName)
       } else {
-        splitAss(content, folder, primaryFile, secondaryFile, baseName)
+        splitAss(content, folder, primaryFile, secondaryFile, bilingualFile, baseName)
       }
     } catch (e: Exception) {
       Log.e(TAG, "Failed to split bilingual subtitle from URI $uri: ${e.message}", e)
@@ -148,6 +158,7 @@ object BilingualSubtitleParser {
     folder: File,
     primaryFile: File,
     secondaryFile: File,
+    bilingualFile: File,
     baseName: String,
   ): BilingualSplitResult? {
     val lines = content.lines()
@@ -187,70 +198,87 @@ object BilingualSubtitleParser {
 
     val tempPri = File.createTempFile("pri_", ".tmp", folder)
     val tempSec = File.createTempFile("sec_", ".tmp", folder)
+    val tempBi = File.createTempFile("bi_", ".tmp", folder)
 
     try {
       tempPri.bufferedWriter(Charsets.UTF_8).use { priWriter ->
         tempSec.bufferedWriter(Charsets.UTF_8).use { secWriter ->
-          // Write standard ASS header with dedicated 'Secondary' style definition
-          writeSecondaryAssHeader(secWriter, baseName)
+          tempBi.bufferedWriter(Charsets.UTF_8).use { biWriter ->
+            // Write standard ASS header with dedicated 'Secondary' style definition
+            writeSecondaryAssHeader(secWriter, baseName)
+            // Write bilingual ASS header with both 'Default' and 'Secondary' style definitions
+            writeBilingualAssHeader(biWriter, baseName)
 
-          for (line in lines) {
-            if (!line.startsWith("Dialogue:", ignoreCase = true)) {
-              priWriter.write(line)
-              priWriter.newLine()
-              continue
-            }
+            for (line in lines) {
+              if (!line.startsWith("Dialogue:", ignoreCase = true)) {
+                priWriter.write(line)
+                priWriter.newLine()
+                continue
+              }
 
-            val parts = line.split(",", limit = 10)
-            if (parts.size < 10) {
-              priWriter.write(line)
-              priWriter.newLine()
-              continue
-            }
+              val parts = line.split(",", limit = 10)
+              if (parts.size < 10) {
+                priWriter.write(line)
+                priWriter.newLine()
+                continue
+              }
 
-            val startT = parts[1]
-            val endT = parts[2]
-            val rawText = parts[9]
-            val subParts = rawText.split(ASS_SPLIT_REGEX)
+              val startT = parts[1]
+              val endT = parts[2]
+              val rawText = parts[9]
+              val subParts = rawText.split(ASS_SPLIT_REGEX)
 
-            val priParts = mutableListOf<String>()
-            val secParts = mutableListOf<String>()
+              val priParts = mutableListOf<String>()
+              val secParts = mutableListOf<String>()
 
-            for (p in subParts) {
-              val pClean = TAG_REGEX.replace(p, "")
-              val hasCjk = CJK_REGEX.containsMatchIn(pClean)
-              val hasLatin = LATIN_REGEX.containsMatchIn(pClean)
+              for (p in subParts) {
+                val pClean = TAG_REGEX.replace(p, "")
+                val hasCjk = CJK_REGEX.containsMatchIn(pClean)
+                val hasLatin = LATIN_REGEX.containsMatchIn(pClean)
 
-              if (hasCjk) {
-                priParts.add(p)
-              } else if (hasLatin) {
-                secParts.add(cleanAssOverrideTags(p))
-              } else {
-                // Numbers, punctuation, sound effects
-                if (priParts.isNotEmpty()) {
+                if (hasCjk) {
                   priParts.add(p)
+                } else if (hasLatin) {
+                  secParts.add(cleanAssOverrideTags(p))
                 } else {
-                  priParts.add(p)
+                  // Numbers, punctuation, sound effects
+                  if (priParts.isNotEmpty()) {
+                    priParts.add(p)
+                  } else {
+                    priParts.add(p)
+                  }
                 }
               }
-            }
 
-            // Write primary ASS dialogue
-            val priText = if (priParts.isNotEmpty()) priParts.joinToString("\\N") else ""
-            val newPriLine = parts.take(9).joinToString(",") + "," + priText
-            priWriter.write(newPriLine)
-            priWriter.newLine()
+              // 1. Write primary ASS dialogue (pure Chinese)
+              val priText = if (priParts.isNotEmpty()) priParts.joinToString("\\N") else ""
+              val newPriLine = parts.take(9).joinToString(",") + "," + priText
+              priWriter.write(newPriLine)
+              priWriter.newLine()
 
-            // Write secondary ASS dialogue using 'Secondary' style
-            if (secParts.isNotEmpty()) {
-              val cleanedSec = secParts
-                .map { TAG_REGEX.replace(it, "").replace("\\h", " ").trim() }
-                .filter { it.isNotEmpty() }
-                .joinToString("\\N")
+              // 2. Write secondary ASS dialogue using 'Secondary' style (pure English)
+              val cleanedSec = if (secParts.isNotEmpty()) {
+                secParts
+                  .map { TAG_REGEX.replace(it, "").replace("\\h", " ").trim() }
+                  .filter { it.isNotEmpty() }
+                  .joinToString("\\N")
+              } else ""
 
               if (cleanedSec.isNotEmpty()) {
                 secWriter.write("Dialogue: 0,$startT,$endT,Secondary,,0,0,0,,$cleanedSec")
                 secWriter.newLine()
+              }
+
+              // 3. Write unified bilingual ASS dialogue (Solution 1:流式排版, zero overlap)
+              if (priText.isNotEmpty() && cleanedSec.isNotEmpty()) {
+                biWriter.write("Dialogue: 0,$startT,$endT,Default,,0,0,0,,$priText\\N{\\rSecondary}$cleanedSec")
+                biWriter.newLine()
+              } else if (priText.isNotEmpty()) {
+                biWriter.write("Dialogue: 0,$startT,$endT,Default,,0,0,0,,$priText")
+                biWriter.newLine()
+              } else if (cleanedSec.isNotEmpty()) {
+                biWriter.write("Dialogue: 0,$startT,$endT,Secondary,,0,0,0,,$cleanedSec")
+                biWriter.newLine()
               }
             }
           }
@@ -259,16 +287,20 @@ object BilingualSubtitleParser {
 
       tempPri.renameTo(primaryFile)
       tempSec.renameTo(secondaryFile)
+      tempBi.renameTo(bilingualFile)
 
       return BilingualSplitResult(
         primaryFile = primaryFile,
         secondaryFile = secondaryFile,
+        bilingualFile = bilingualFile,
         primaryTitle = "[中] $baseName",
         secondaryTitle = "[英] $baseName",
+        bilingualTitle = "[双语] $baseName",
       )
     } catch (e: Exception) {
       tempPri.delete()
       tempSec.delete()
+      tempBi.delete()
       throw e
     }
   }
@@ -278,6 +310,7 @@ object BilingualSubtitleParser {
     folder: File,
     primaryFile: File,
     secondaryFile: File,
+    bilingualFile: File,
     baseName: String,
   ): BilingualSplitResult? {
     val blocks = content.replace("\r\n", "\n").split("\n\n").filter { it.isNotBlank() }
@@ -311,57 +344,77 @@ object BilingualSubtitleParser {
 
     val tempPri = File.createTempFile("pri_", ".tmp", folder)
     val tempSec = File.createTempFile("sec_", ".tmp", folder)
+    val tempBi = File.createTempFile("bi_", ".tmp", folder)
 
     try {
       tempPri.bufferedWriter(Charsets.UTF_8).use { priWriter ->
         tempSec.bufferedWriter(Charsets.UTF_8).use { secWriter ->
-          var priIndex = 1
-          // Write standard ASS header with dedicated 'Secondary' style definition
-          writeSecondaryAssHeader(secWriter, baseName)
+          tempBi.bufferedWriter(Charsets.UTF_8).use { biWriter ->
+            var priIndex = 1
+            // Write standard ASS header with dedicated 'Secondary' style definition
+            writeSecondaryAssHeader(secWriter, baseName)
+            // Write bilingual ASS header with both 'Default' and 'Secondary' style definitions
+            writeBilingualAssHeader(biWriter, baseName)
 
-          for (block in blocks) {
-            val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
-            if (lines.size < 3 || !lines[1].contains("-->")) continue
+            for (block in blocks) {
+              val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
+              if (lines.size < 3 || !lines[1].contains("-->")) continue
 
-            val timecode = lines[1]
-            val textLines = lines.drop(2)
+              val timecode = lines[1]
+              val textLines = lines.drop(2)
 
-            val priLines = mutableListOf<String>()
-            val secLines = mutableListOf<String>()
+              val priLines = mutableListOf<String>()
+              val secLines = mutableListOf<String>()
 
-            for (tl in textLines) {
-              val hasCjk = CJK_REGEX.containsMatchIn(tl)
-              val hasLatin = LATIN_REGEX.containsMatchIn(tl)
+              for (tl in textLines) {
+                val hasCjk = CJK_REGEX.containsMatchIn(tl)
+                val hasLatin = LATIN_REGEX.containsMatchIn(tl)
 
-              if (hasCjk) {
-                priLines.add(tl)
-              } else if (hasLatin) {
-                secLines.add(tl)
-              } else {
-                if (priLines.isNotEmpty()) priLines.add(tl)
-                else priLines.add(tl)
+                if (hasCjk) {
+                  priLines.add(tl)
+                } else if (hasLatin) {
+                  secLines.add(tl)
+                } else {
+                  if (priLines.isNotEmpty()) priLines.add(tl)
+                  else priLines.add(tl)
+                }
               }
-            }
 
-            if (priLines.isNotEmpty()) {
-              priWriter.write(priIndex.toString())
-              priWriter.newLine()
-              priWriter.write(timecode)
-              priWriter.newLine()
-              priWriter.write(priLines.joinToString("\n"))
-              priWriter.newLine()
-              priWriter.newLine()
-              priIndex++
-            }
+              // 1. Write primary SRT (pure Chinese)
+              if (priLines.isNotEmpty()) {
+                priWriter.write(priIndex.toString())
+                priWriter.newLine()
+                priWriter.write(timecode)
+                priWriter.newLine()
+                priWriter.write(priLines.joinToString("\n"))
+                priWriter.newLine()
+                priWriter.newLine()
+                priIndex++
+              }
 
-            if (secLines.isNotEmpty()) {
+              // 2. Write secondary ASS (pure English) & 3. Unified bilingual ASS
               val times = timecode.split("-->").map { it.trim() }
               if (times.size == 2) {
                 val startAss = srtTimeToAss(times[0])
                 val endAss = srtTimeToAss(times[1])
                 val cleanedSec = secLines.joinToString("\\N")
-                secWriter.write("Dialogue: 0,$startAss,$endAss,Secondary,,0,0,0,,$cleanedSec")
-                secWriter.newLine()
+                val priAssText = priLines.joinToString("\\N")
+
+                if (cleanedSec.isNotEmpty()) {
+                  secWriter.write("Dialogue: 0,$startAss,$endAss,Secondary,,0,0,0,,$cleanedSec")
+                  secWriter.newLine()
+                }
+
+                if (priAssText.isNotEmpty() && cleanedSec.isNotEmpty()) {
+                  biWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priAssText\\N{\\rSecondary}$cleanedSec")
+                  biWriter.newLine()
+                } else if (priAssText.isNotEmpty()) {
+                  biWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priAssText")
+                  biWriter.newLine()
+                } else if (cleanedSec.isNotEmpty()) {
+                  biWriter.write("Dialogue: 0,$startAss,$endAss,Secondary,,0,0,0,,$cleanedSec")
+                  biWriter.newLine()
+                }
               }
             }
           }
@@ -370,16 +423,20 @@ object BilingualSubtitleParser {
 
       tempPri.renameTo(primaryFile)
       tempSec.renameTo(secondaryFile)
+      tempBi.renameTo(bilingualFile)
 
       return BilingualSplitResult(
         primaryFile = primaryFile,
         secondaryFile = secondaryFile,
+        bilingualFile = bilingualFile,
         primaryTitle = "[中] $baseName",
         secondaryTitle = "[英] $baseName",
+        bilingualTitle = "[双语] $baseName",
       )
     } catch (e: Exception) {
       tempPri.delete()
       tempSec.delete()
+      tempBi.delete()
       throw e
     }
   }
@@ -430,6 +487,45 @@ object BilingualSubtitleParser {
     writer.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
     writer.newLine()
     // Default Secondary style: Fontsize 45, Alignment 2 (bottom center), white text, black border, base MarginV 20
+    writer.write("Style: Secondary,sans-serif,45,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,20,1")
+    writer.newLine()
+    writer.newLine()
+    writer.write("[Events]")
+    writer.newLine()
+    writer.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+    writer.newLine()
+  }
+
+  /**
+   * Writes a unified bilingual ASS header with both 'Default' (primary Chinese) and 'Secondary' (English) styles.
+   * Enables Solution 1 flowing paragraph layout with independent style control via sub-ass-style-overrides.
+   */
+  private fun writeBilingualAssHeader(writer: BufferedWriter, baseName: String) {
+    writer.write("[Script Info]")
+    writer.newLine()
+    writer.write("Title: [双语] $baseName")
+    writer.newLine()
+    writer.write("ScriptType: v4.00+")
+    writer.newLine()
+    writer.write("WrapStyle: 0")
+    writer.newLine()
+    writer.write("ScaledBorderAndShadow: yes")
+    writer.newLine()
+    writer.write("YCbCr Matrix: None")
+    writer.newLine()
+    writer.write("PlayResX: 1920")
+    writer.newLine()
+    writer.write("PlayResY: 1080")
+    writer.newLine()
+    writer.newLine()
+    writer.write("[V4+ Styles]")
+    writer.newLine()
+    writer.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+    writer.newLine()
+    // Default style: Primary (Chinese), Fontsize 55, Alignment 2
+    writer.write("Style: Default,sans-serif,55,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,20,1")
+    writer.newLine()
+    // Secondary style: Secondary (English), Fontsize 45, Alignment 2
     writer.write("Style: Secondary,sans-serif,45,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,20,1")
     writer.newLine()
     writer.newLine()

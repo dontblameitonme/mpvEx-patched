@@ -254,6 +254,12 @@
   <string name="pref_about_donate_upi">UPI</string>
   <string name="pref_about_donate_upi_id" translatable="false">aadiinarvekar@upi</string>
   <string name="player_sheets_add_ext_sub">Add external subtitles</string>
+  <string name="player_sheets_sub_mode_title">Default Subtitle Mode</string>
+  <string name="player_sheets_sub_mode_single">Single Subtitle</string>
+  <string name="player_sheets_sub_mode_multi">Dual Subtitles</string>
+  <string name="player_sheets_sub_role_primary">Primary</string>
+  <string name="player_sheets_sub_role_secondary">Secondary</string>
+  <string name="player_sheets_sub_role_bilingual">Bilingual</string>
   <string name="player_sheets_add_ext_audio">Add external audio tracks</string>
   <string name="player_sheets_tracks_off">Off</string>
   <string name="player_sheets_track_title_w_lang" translatable="false">#%d: %s (%s)</string>

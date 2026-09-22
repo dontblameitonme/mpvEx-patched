@@ -122,15 +122,20 @@ fun PlayerSheets(
           )
       }
 
+      val subtitleMode by subtitlesPreferences.subtitleMode.collectAsState()
+
       SubtitlesSheet(
         tracks = subtitles.toImmutableList(),
+        subtitleMode = subtitleMode,
+        onSubtitleModeChange = { viewModel.setSubtitleMode(it) },
         onToggleSubtitle = onToggleSubtitle,
         isSubtitleSelected = isSubtitleSelected,
+        getSubtitleRole = { viewModel.getSubtitleRole(it) },
         onAddSubtitle = { showFilePicker = true },
         onRemoveSubtitle = onRemoveSubtitle,
         onOpenSubtitleSettings = { onOpenPanel(Panels.SubtitleSettings) },
         onOpenSubtitleDelay = { onOpenPanel(Panels.SubtitleDelay) },
-        onDismissRequest = onDismissRequest
+        onDismissRequest = onDismissRequest,
       )
     }
 
