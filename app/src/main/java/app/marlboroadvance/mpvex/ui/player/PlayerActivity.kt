@@ -50,6 +50,7 @@ import app.marlboroadvance.mpvex.utils.media.HttpUtils
 import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
 import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import app.marlboroadvance.mpvex.utils.media.SubtitleOps
+import app.marlboroadvance.mpvex.utils.media.PlaybackStateOps
 import app.marlboroadvance.mpvex.utils.storage.FileTypeUtils
 import app.marlboroadvance.mpvex.utils.storage.FileFilterUtils
 import com.github.k1rakishou.fsaf.FileManager
@@ -587,6 +588,11 @@ class PlayerActivity :
         }
         stopService(Intent(this, MediaPlaybackService::class.java))
         mediaPlaybackService = null
+
+        val appContext = applicationContext
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+          PlaybackStateOps.pruneOrphanedStates(appContext)
+        }
       }
 
       // Wait for any pending save operation to complete before destroying MPV
@@ -871,22 +877,27 @@ class PlayerActivity :
    * Initializes the MPV player with the necessary paths and observers.
    */
   private fun setupMPV() {
-    // Copy essential files FIRST, before MPV initialization
-    runCatching {
-      Utils.copyAssets(this@PlayerActivity)
-      syncFromUserMpvDirectory()
-      Log.d(TAG, "MPV config and scripts prepared successfully")
-    }.onFailure { e ->
-      Log.e(TAG, "Error copying MPV config and scripts", e)
-    }
+    // Fast path: ensure minimal config files exist before initialize
+    copyMPVConfigFromPreferences()
 
-    // NOW initialize MPV - it will find and load the scripts we just copied
+    // NOW initialize MPV
     player.initialize(filesDir.path, cacheDir.path)
     mpvInitialized = true
     Log.d(TAG, "MPV initialized")
 
     // Add observer after initialization
     MPVLib.addObserver(playerObserver)
+
+    // Sync bundled assets and user configs in the background to avoid freezing the main UI thread during video launch
+    lifecycleScope.launch(Dispatchers.IO) {
+      runCatching {
+        Utils.copyAssets(this@PlayerActivity)
+        syncFromUserMpvDirectory()
+        Log.d(TAG, "MPV config, scripts, and fonts synced in background")
+      }.onFailure { e ->
+        Log.e(TAG, "Error syncing MPV config and scripts", e)
+      }
+    }
   }
 
   /**
@@ -1783,6 +1794,11 @@ class PlayerActivity :
         }
       }
 
+      // Reconcile saved subtitle tracks after autoloading
+      if (hasState) {
+        reconcileSavedSubtitles()
+      }
+
       // Apply track selection logic (defaults only apply when no saved state)
       trackSelector.onFileLoaded(hasState)
 
@@ -2052,8 +2068,8 @@ class PlayerActivity :
     val scaleValue = if (scaleByWindow) "yes" else "no"
     MPVLib.setPropertyString("sub-scale-by-window", scaleValue)
     MPVLib.setPropertyString("sub-use-margins", scaleValue)
-    MPVLib.setPropertyString("secondary-sub-scale-by-window", scaleValue)
-    MPVLib.setPropertyString("secondary-sub-use-margins", scaleValue)
+    MPVLib.setPropertyString("sub-ass-scale-with-window", scaleValue)
+    MPVLib.setPropertyString("sub-ass-force-margins", scaleValue)
 
     Log.d(TAG, "Applied subtitle preferences")
   }
@@ -2095,6 +2111,16 @@ class PlayerActivity :
           currentSid to currentSecondarySid
         }
 
+        val subTracks = viewModel.subtitleTracks.value
+        val primaryTrack = subTracks.firstOrNull { it.id == effectiveSid }
+        val secondaryTrack = subTracks.firstOrNull { it.id == effectiveSecondarySid }
+        val selectedSubTitle = primaryTrack?.title?.ifBlank { primaryTrack.lang } ?: primaryTrack?.lang
+        val selectedSecondarySubTitle = secondaryTrack?.title?.ifBlank { secondaryTrack.lang } ?: secondaryTrack?.lang
+        val selectedSubMode = subtitlesPreferences.subtitleMode.get().name
+
+        val currentUri = playlist.getOrNull(playlistIndex)
+        val localVideoPath = currentUri?.let { resolveStableLocalPath(it) }
+
         playbackStateRepository.upsert(
           PlaybackStateEntity(
             mediaTitle = mediaIdentifier,
@@ -2103,6 +2129,10 @@ class PlayerActivity :
             videoZoom = MPVLib.getPropertyDouble("video-zoom")?.toFloat() ?: 0f,
             sid = effectiveSid,
             secondarySid = effectiveSecondarySid,
+            selectedSubTitle = selectedSubTitle,
+            selectedSecondarySubTitle = selectedSecondarySubTitle,
+            selectedSubMode = selectedSubMode,
+            localVideoPath = localVideoPath,
             subDelay = ((MPVLib.getPropertyDouble("sub-delay") ?: 0.0) * MILLISECONDS_TO_SECONDS).toInt(),
             subSpeed = MPVLib.getPropertyDouble("sub-speed") ?: DEFAULT_SUB_SPEED,
             aid = player.aid,
@@ -2233,8 +2263,66 @@ class PlayerActivity :
     MPVLib.setPropertyDouble("video-zoom", state.videoZoom.toDouble())
     viewModel.setVideoZoom(state.videoZoom)
 
+    // Restore subtitle mode if saved
+    if (!state.selectedSubMode.isNullOrBlank()) {
+      runCatching {
+        app.marlboroadvance.mpvex.preferences.SubtitleMode.valueOf(state.selectedSubMode)
+      }.getOrNull()?.let { mode ->
+        subtitlesPreferences.subtitleMode.set(mode)
+      }
+    }
+
     if (playerPreferences.savePositionOnQuit.get() && state.lastPosition != 0) {
       MPVLib.setPropertyInt("time-pos", state.lastPosition)
+    }
+  }
+
+  /**
+   * Reconciles subtitle selection after autoloading matching external/split subtitles.
+   * Matches tracks by title rather than fragile numeric IDs.
+   */
+  private suspend fun reconcileSavedSubtitles() {
+    val state = playbackStateRepository.getVideoDataByTitle(mediaIdentifier) ?: return
+
+    // Allow mpv track-list event to process if tracks are still empty
+    var tracks = viewModel.subtitleTracks.value
+    if (tracks.isEmpty()) {
+      delay(50)
+      tracks = viewModel.subtitleTracks.value
+    }
+
+    val targetSubTitle = state.selectedSubTitle
+    if (!targetSubTitle.isNullOrBlank()) {
+      val matched = tracks.firstOrNull { it.title == targetSubTitle || it.lang == targetSubTitle }
+      if (matched != null) {
+        player.sid = matched.id
+        Log.d(TAG, "Reconciled primary subtitle by title '$targetSubTitle' -> id ${matched.id}")
+      } else if (state.sid > 0) {
+        player.sid = state.sid
+      }
+    } else if (state.sid <= 0) {
+      player.sid = -1
+    }
+
+    val targetSecTitle = state.selectedSecondarySubTitle
+    if (!targetSecTitle.isNullOrBlank()) {
+      val matchedSec = tracks.firstOrNull { it.title == targetSecTitle || it.lang == targetSecTitle }
+      if (matchedSec != null) {
+        player.secondarySid = matchedSec.id
+        applySecondarySubStyleOverrides(subtitlesPreferences)
+        Log.d(TAG, "Reconciled secondary subtitle by title '$targetSecTitle' -> id ${matchedSec.id}")
+      } else if (state.secondarySid > 0) {
+        player.secondarySid = state.secondarySid
+        applySecondarySubStyleOverrides(subtitlesPreferences)
+      }
+    } else if (state.secondarySid <= 0) {
+      player.secondarySid = -1
+    }
+
+    if (state.videoZoom != 0f) {
+      withContext(Dispatchers.Main) {
+        viewModel.setVideoZoom(state.videoZoom)
+      }
     }
   }
 

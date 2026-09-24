@@ -37,6 +37,7 @@ import `is`.xyz.mpv.MPVLib
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import app.marlboroadvance.mpvex.preferences.SubAssOverride
+import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import me.zhanghai.compose.preference.ListPreference
 import kotlin.math.roundToInt
 import me.zhanghai.compose.preference.ListPreferenceType
@@ -99,6 +100,9 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
             val value = if (it) "yes" else "no"
             MPVLib.setPropertyString("sub-scale-by-window", value)
             MPVLib.setPropertyString("sub-use-margins", value)
+            MPVLib.setPropertyString("sub-ass-scale-with-window", value)
+            MPVLib.setPropertyString("sub-ass-force-margins", value)
+            applySecondarySubStyleOverrides(preferences)
           },
           { Text(stringResource(R.string.player_sheets_sub_scale_by_window)) },
           summary = { Text(stringResource(R.string.player_sheets_sub_scale_by_window_summary)) },
@@ -189,6 +193,9 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
               val scaleValue = if (defaultScaleByWindow) "yes" else "no"
               MPVLib.setPropertyString("sub-scale-by-window", scaleValue)
               MPVLib.setPropertyString("sub-use-margins", scaleValue)
+              MPVLib.setPropertyString("sub-ass-scale-with-window", scaleValue)
+              MPVLib.setPropertyString("sub-ass-force-margins", scaleValue)
+              applySecondarySubStyleOverrides(preferences)
             },
           ) {
             Row {

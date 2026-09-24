@@ -18,4 +18,8 @@ data class PlaybackStateEntity(
   val timeRemaining: Int = 0, // in seconds (duration - lastPosition)
   val externalSubtitles: String = "", // Comma-separated list of external subtitle URIs
   val hasBeenWatched: Boolean = false, // Persistent flag: true if video has ever reached the watched threshold
+  val selectedSubTitle: String? = null, // Persistent title/name of selected primary subtitle
+  val selectedSecondarySubTitle: String? = null, // Persistent title/name of selected secondary subtitle
+  val selectedSubMode: String? = null, // "Single" or "Multi"
+  val localVideoPath: String? = null, // Local absolute path for lifecycle tracking and pruning
 )

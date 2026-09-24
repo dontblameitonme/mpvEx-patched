@@ -2,6 +2,7 @@ package app.marlboroadvance.mpvex.ui.player.controls.components.sheets
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -149,6 +151,49 @@ private fun ZoomVideoSheet(
         modifier = Modifier.size(36.dp),
       ) {
         Icon(Icons.Default.Add, contentDescription = "Increase zoom", modifier = Modifier.size(18.dp))
+      }
+    }
+
+    // Quick fine-step zoom buttons
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = MaterialTheme.spacing.medium),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      FilledTonalButton(
+        onClick = { onZoomChange((zoom - 0.05f).coerceAtLeast(-1f)) },
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+      ) {
+        Text("-0.05", style = MaterialTheme.typography.labelSmall)
+      }
+      FilledTonalButton(
+        onClick = { onZoomChange((zoom - 0.01f).coerceAtLeast(-1f)) },
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+      ) {
+        Text("-0.01", style = MaterialTheme.typography.labelSmall)
+      }
+      FilledTonalButton(
+        onClick = {
+          onZoomChange(0f)
+          onReset()
+        },
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+      ) {
+        Text("0.00x", style = MaterialTheme.typography.labelSmall)
+      }
+      FilledTonalButton(
+        onClick = { onZoomChange((zoom + 0.01f).coerceAtMost(3f)) },
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+      ) {
+        Text("+0.01", style = MaterialTheme.typography.labelSmall)
+      }
+      FilledTonalButton(
+        onClick = { onZoomChange((zoom + 0.05f).coerceAtMost(3f)) },
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+      ) {
+        Text("+0.05", style = MaterialTheme.typography.labelSmall)
       }
     }
 

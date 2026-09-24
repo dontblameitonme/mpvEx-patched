@@ -396,6 +396,10 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
             `timeRemaining` INTEGER NOT NULL DEFAULT 0,
             `externalSubtitles` TEXT NOT NULL DEFAULT '',
             `hasBeenWatched` INTEGER NOT NULL DEFAULT 0,
+            `selectedSubTitle` TEXT DEFAULT NULL,
+            `selectedSecondarySubTitle` TEXT DEFAULT NULL,
+            `selectedSubMode` TEXT DEFAULT NULL,
+            `localVideoPath` TEXT DEFAULT NULL,
             PRIMARY KEY(`mediaTitle`)
           )
           """.trimIndent()
@@ -403,11 +407,15 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
         
         // Copy data from old table, handling missing columns
         if (hasExternalSubtitles && hasHasBeenWatched) {
-          // Schema is correct, just copy everything
+          // Schema is correct, copy available columns
           db.execSQL(
             """
             INSERT INTO `PlaybackStateEntity_new` 
-            SELECT * FROM `PlaybackStateEntity`
+            (`mediaTitle`, `lastPosition`, `playbackSpeed`, `videoZoom`, `sid`, `secondarySid`, 
+             `subDelay`, `subSpeed`, `aid`, `audioDelay`, `timeRemaining`, `externalSubtitles`, `hasBeenWatched`)
+            SELECT `mediaTitle`, `lastPosition`, `playbackSpeed`, `videoZoom`, `sid`, `secondarySid`, 
+                   `subDelay`, `subSpeed`, `aid`, `audioDelay`, `timeRemaining`, `externalSubtitles`, `hasBeenWatched`
+            FROM `PlaybackStateEntity`
             """.trimIndent()
           )
         } else if (hasExternalSubtitles && !hasHasBeenWatched) {
@@ -448,7 +456,19 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
         
         android.util.Log.d("Migration_8_9", "Table recreated successfully")
       } else {
-        android.util.Log.d("Migration_8_9", "Schema is correct, no repair needed")
+        if (!existingColumns.contains("selectedSubTitle")) {
+          db.execSQL("ALTER TABLE `PlaybackStateEntity` ADD COLUMN `selectedSubTitle` TEXT DEFAULT NULL")
+        }
+        if (!existingColumns.contains("selectedSecondarySubTitle")) {
+          db.execSQL("ALTER TABLE `PlaybackStateEntity` ADD COLUMN `selectedSecondarySubTitle` TEXT DEFAULT NULL")
+        }
+        if (!existingColumns.contains("selectedSubMode")) {
+          db.execSQL("ALTER TABLE `PlaybackStateEntity` ADD COLUMN `selectedSubMode` TEXT DEFAULT NULL")
+        }
+        if (!existingColumns.contains("localVideoPath")) {
+          db.execSQL("ALTER TABLE `PlaybackStateEntity` ADD COLUMN `localVideoPath` TEXT DEFAULT NULL")
+        }
+        android.util.Log.d("Migration_8_9", "Columns added or verified successfully")
       }
       
       android.util.Log.d("Migration_8_9", "Migration completed successfully")

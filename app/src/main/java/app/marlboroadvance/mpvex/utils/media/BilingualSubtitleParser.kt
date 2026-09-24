@@ -663,4 +663,9 @@ fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
   MPVLib.setPropertyString("sub-ass-style-overrides", overrides)
   MPVLib.setPropertyString("secondary-sub-ass-override", "scale")
   MPVLib.setPropertyInt("secondary-sub-pos", secPosInt)
+  val scaleByWindow = preferences.scaleByWindow.get()
+  val scaleValue = if (scaleByWindow) "yes" else "no"
+  MPVLib.setPropertyString("sub-ass-scale-with-window", scaleValue)
+  MPVLib.setPropertyString("sub-ass-force-margins", scaleValue)
+  MPVLib.setPropertyFloat("secondary-sub-scale", subScale)
 }

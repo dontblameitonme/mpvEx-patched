@@ -80,17 +80,16 @@ fun PlayerSheets(
         }
 
       val subtitlesPreferences = koinInject<app.marlboroadvance.mpvex.preferences.SubtitlesPreferences>()
-      val savedPickerPath = subtitlesPreferences.pickerPath.get()
-
-      val currentMediaTitle = viewModel.currentMediaTitle
-      val matchToName = if (currentMediaTitle.isNotBlank()) {
-          // Remove extension if present to improve matching
-          currentMediaTitle.substringBeforeLast(".")
-      } else null
-
       var showFilePicker by remember { mutableStateOf(false) }
 
       if (showFilePicker) {
+          val savedPickerPath = subtitlesPreferences.pickerPath.get()
+          val currentMediaTitle = viewModel.currentMediaTitle
+          val matchToName = if (currentMediaTitle.isNotBlank()) {
+              // Remove extension if present to improve matching
+              currentMediaTitle.substringBeforeLast(".")
+          } else null
+
           app.marlboroadvance.mpvex.ui.browser.dialogs.FilePickerDialog(
               isOpen = true,
               currentPath = savedPickerPath.ifBlank { android.os.Environment.getExternalStorageDirectory().absolutePath },
@@ -123,14 +122,16 @@ fun PlayerSheets(
       }
 
       val subtitleMode by subtitlesPreferences.subtitleMode.collectAsState()
+      val primarySid by viewModel.primarySid.composeCollectAsState()
+      val secondarySid by viewModel.secondarySid.composeCollectAsState()
 
       SubtitlesSheet(
         tracks = subtitles.toImmutableList(),
+        primarySid = primarySid,
+        secondarySid = secondarySid,
         subtitleMode = subtitleMode,
         onSubtitleModeChange = { viewModel.setSubtitleMode(it) },
         onToggleSubtitle = onToggleSubtitle,
-        isSubtitleSelected = isSubtitleSelected,
-        getSubtitleRole = { viewModel.getSubtitleRole(it) },
         onAddSubtitle = { showFilePicker = true },
         onRemoveSubtitle = onRemoveSubtitle,
         onOpenSubtitleSettings = { onOpenPanel(Panels.SubtitleSettings) },

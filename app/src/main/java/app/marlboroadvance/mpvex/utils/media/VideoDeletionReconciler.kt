@@ -68,5 +68,8 @@ object VideoDeletionReconciler {
       val removed = playlistRepository.removeItemsByFilePaths(paths)
       if (removed > 0) Log.d(TAG, "Removed $removed dangling playlist item(s)")
     }.onFailure { Log.w(TAG, "Playlist cleanup failed", it) }
+
+    runCatching { PlaybackStateOps.pruneOrphanedStates() }
+      .onFailure { Log.w(TAG, "Pruning orphaned playback states failed", it) }
   }
 }

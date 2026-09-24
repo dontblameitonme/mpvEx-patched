@@ -35,11 +35,11 @@ sealed class SubtitleItem {
 @Composable
 fun SubtitlesSheet(
   tracks: ImmutableList<TrackNode>,
+  primarySid: Int,
+  secondarySid: Int,
   subtitleMode: SubtitleMode,
   onSubtitleModeChange: (SubtitleMode) -> Unit,
   onToggleSubtitle: (Int) -> Unit,
-  isSubtitleSelected: (Int) -> Boolean,
-  getSubtitleRole: (Int) -> String?,
   onAddSubtitle: () -> Unit,
   onOpenSubtitleSettings: () -> Unit,
   onOpenSubtitleDelay: () -> Unit,
@@ -109,12 +109,27 @@ fun SubtitlesSheet(
       when (item) {
         is SubtitleItem.Track -> {
           val track = item.node
+          val isSelected = if (subtitleMode == SubtitleMode.Single) {
+            track.id == primarySid && primarySid > 0
+          } else {
+            (track.id == primarySid && primarySid > 0) || (track.id == secondarySid && secondarySid > 0)
+          }
+          val roleBadge = if (subtitleMode == SubtitleMode.Single) {
+            null
+          } else if (track.title?.startsWith("[双语]") == true && track.id == primarySid) {
+            stringResource(R.string.player_sheets_sub_role_bilingual)
+          } else when (track.id) {
+            primarySid -> stringResource(R.string.player_sheets_sub_role_primary)
+            secondarySid -> stringResource(R.string.player_sheets_sub_role_secondary)
+            else -> null
+          }
+
           SubtitleTrackRow(
             title = getTrackTitle(track),
-            isSelected = isSubtitleSelected(track.id),
+            isSelected = isSelected,
             isExternal = track.external == true,
             isSingleMode = subtitleMode == SubtitleMode.Single,
-            roleBadge = getSubtitleRole(track.id),
+            roleBadge = roleBadge,
             onToggle = { onToggleSubtitle(track.id) },
             onRemove = { onRemoveSubtitle(track.id) },
           )

@@ -319,8 +319,8 @@ class MPVView(
     val scaleByWindow = if (subtitlesPreferences.scaleByWindow.get()) "yes" else "no"
     MPVLib.setOptionString("sub-scale-by-window", scaleByWindow)
     MPVLib.setOptionString("sub-use-margins", scaleByWindow)
-    MPVLib.setOptionString("secondary-sub-scale-by-window", scaleByWindow)
-    MPVLib.setOptionString("secondary-sub-use-margins", scaleByWindow)
+    MPVLib.setOptionString("sub-ass-scale-with-window", scaleByWindow)
+    MPVLib.setOptionString("sub-ass-force-margins", scaleByWindow)
   }
 
 

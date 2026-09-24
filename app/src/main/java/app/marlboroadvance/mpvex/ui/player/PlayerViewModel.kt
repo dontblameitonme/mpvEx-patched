@@ -152,6 +152,16 @@ class PlayerViewModel(
           ?: persistentListOf()
       }.stateIn(viewModelScope, SharingStarted.Lazily, persistentListOf())
 
+  val primarySid: StateFlow<Int> =
+    MPVLib.propString["sid"]
+      .map { it?.toIntOrNull() ?: 0 }
+      .stateIn(viewModelScope, SharingStarted.Lazily, MPVLib.getPropertyString("sid")?.toIntOrNull() ?: 0)
+
+  val secondarySid: StateFlow<Int> =
+    MPVLib.propString["secondary-sid"]
+      .map { it?.toIntOrNull() ?: 0 }
+      .stateIn(viewModelScope, SharingStarted.Lazily, MPVLib.getPropertyString("secondary-sid")?.toIntOrNull() ?: 0)
+
   val audioTracks: StateFlow<List<TrackNode>> =
     MPVLib.propNode["track-list"]
       .map { node ->
@@ -671,10 +681,10 @@ class PlayerViewModel(
 
 
   fun getPrimarySubtitleId(): Int =
-    MPVLib.getPropertyString("sid")?.toIntOrNull() ?: 0
+    primarySid.value.takeIf { it > 0 } ?: (MPVLib.getPropertyString("sid")?.toIntOrNull() ?: 0)
 
   fun getSecondarySubtitleId(): Int =
-    MPVLib.getPropertyString("secondary-sid")?.toIntOrNull() ?: 0
+    secondarySid.value.takeIf { it > 0 } ?: (MPVLib.getPropertyString("secondary-sid")?.toIntOrNull() ?: 0)
 
   fun removeSubtitle(id: Int) {
     viewModelScope.launch(Dispatchers.IO) {
@@ -1451,6 +1461,12 @@ class PlayerViewModel(
 
   fun setVideoZoom(zoom: Float) {
     _videoZoom.value = zoom
+    _videoPanX.value = 0f
+    _videoPanY.value = 0f
+    MPVLib.setPropertyDouble("video-align-x", 0.0)
+    MPVLib.setPropertyDouble("video-align-y", 0.0)
+    MPVLib.setPropertyDouble("video-pan-x", 0.0)
+    MPVLib.setPropertyDouble("video-pan-y", 0.0)
     MPVLib.setPropertyDouble("video-zoom", zoom.toDouble())
   }
 

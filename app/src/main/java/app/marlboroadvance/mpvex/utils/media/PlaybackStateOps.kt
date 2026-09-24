@@ -65,4 +65,43 @@ object PlaybackStateOps {
       Log.w(TAG, "Failed to delete playback state: ${e.message}")
     }
   }
+
+  /**
+   * Prunes all playback states and generated subtitle caches whose local video files no longer exist.
+   * Keeps database lean and eliminates stale configs when files are deleted.
+   */
+  suspend fun pruneOrphanedStates(context: android.content.Context? = null) {
+    try {
+      val allStates = repository.getAllPlaybackStates()
+      var prunedCount = 0
+      for (state in allStates) {
+        val path = state.localVideoPath
+        if (!path.isNullOrBlank()) {
+          val file = java.io.File(path)
+          if (!file.exists()) {
+            repository.deleteByTitle(state.mediaTitle)
+            prunedCount++
+            Log.d(TAG, "✓ Pruned orphaned playback state for deleted file: $path")
+
+            // Clean up any temporary subtitle cache files generated for this video
+            if (context != null) {
+              val cacheSubDir = java.io.File(context.cacheDir, "subtitles")
+              if (cacheSubDir.exists()) {
+                val baseName = file.nameWithoutExtension
+                cacheSubDir.listFiles { f -> f.name.contains(baseName) }?.forEach { subFile ->
+                  subFile.delete()
+                  Log.d(TAG, "✓ Deleted orphaned subtitle cache: ${subFile.name}")
+                }
+              }
+            }
+          }
+        }
+      }
+      if (prunedCount > 0) {
+        Log.d(TAG, "✓ Pruning complete: removed $prunedCount orphaned playback states")
+      }
+    } catch (e: Exception) {
+      Log.w(TAG, "Failed to prune orphaned playback states: ${e.message}")
+    }
+  }
 }
