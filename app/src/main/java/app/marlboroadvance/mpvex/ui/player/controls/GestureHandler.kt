@@ -703,7 +703,7 @@ fun GestureHandler(
               if (prevDist == 0f) {
                 // First frame — capture baseline
                 prevDist = dist
-                zoom = MPVLib.getPropertyDouble("video-zoom")?.toFloat() ?: 0f
+                zoom = viewModel.videoZoom.value
                 prevMidX = midX
                 prevMidY = midY
               } else {
@@ -719,8 +719,8 @@ fun GestureHandler(
                   zoom = (zoom + zoomDelta).coerceIn(-1f, 3f)
                   viewModel.setVideoZoom(zoom)
 
-                  // Simultaneous pan while pinching
-                  if (panAndZoomEnabled) {
+                  // Simultaneous pan while pinching (disabled in Custom aspect mode to keep centered)
+                  if (panAndZoomEnabled && viewModel.videoAspect.value != app.marlboroadvance.mpvex.ui.player.VideoAspect.Custom) {
                     applyPan(midX - prevMidX, midY - prevMidY, 2f.pow(zoom), panSmooth)
                   }
                 }
@@ -764,8 +764,9 @@ fun GestureHandler(
             val pressed = event.changes.filter { it.pressed }
 
             if (pressed.size == 1) {
+              if (viewModel.videoAspect.value == app.marlboroadvance.mpvex.ui.player.VideoAspect.Custom) { continue }
               val change = pressed[0]
-              val zoom = MPVLib.getPropertyDouble("video-zoom")?.toFloat() ?: 0f
+              val zoom = viewModel.videoZoom.value
               if (zoom <= 0f) { continue }
 
               val pos = change.position

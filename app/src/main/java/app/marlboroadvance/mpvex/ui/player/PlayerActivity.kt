@@ -1768,6 +1768,12 @@ class PlayerActivity :
 
     setIntentExtras(intent.extras)
 
+    // Don't force media-title for m3u/m3u8 streams - let MPV provide it
+    if (!isCurrentStreamM3U()) {
+      MPVLib.setPropertyString("force-media-title", fileName)
+      viewModel.setMediaTitle(fileName)
+    }
+
     lifecycleScope.launch(Dispatchers.IO) {
       // Load playback state (will skip track restoration if preferred language configured)
       val hasState = loadVideoPlaybackState(fileName)
@@ -1806,7 +1812,6 @@ class PlayerActivity :
       if (!hasState) {
         withContext(Dispatchers.Main) {
           val zoomPreference = playerPreferences.defaultVideoZoom.get()
-          MPVLib.setPropertyDouble("video-zoom", zoomPreference.toDouble())
           viewModel.setVideoZoom(zoomPreference)
         }
       }
@@ -1873,12 +1878,6 @@ class PlayerActivity :
     }
 
     applySubtitlePreferences()
-
-    // Don't force media-title for m3u/m3u8 streams - let MPV provide it
-    if (!isCurrentStreamM3U()) {
-      MPVLib.setPropertyString("force-media-title", fileName)
-      viewModel.setMediaTitle(fileName)
-    }
 
     viewModel.unpause()
 
@@ -2126,7 +2125,7 @@ class PlayerActivity :
             mediaTitle = mediaIdentifier,
             lastPosition = lastPosition,
             playbackSpeed = MPVLib.getPropertyDouble("speed") ?: DEFAULT_PLAYBACK_SPEED,
-            videoZoom = MPVLib.getPropertyDouble("video-zoom")?.toFloat() ?: 0f,
+            videoZoom = viewModel.videoZoom.value,
             sid = effectiveSid,
             secondarySid = effectiveSecondarySid,
             selectedSubTitle = selectedSubTitle,
@@ -2260,7 +2259,6 @@ class PlayerActivity :
     MPVLib.setPropertyDouble("sub-speed", state.subSpeed)
 
     // Restore video zoom from saved state
-    MPVLib.setPropertyDouble("video-zoom", state.videoZoom.toDouble())
     viewModel.setVideoZoom(state.videoZoom)
 
     // Restore subtitle mode if saved

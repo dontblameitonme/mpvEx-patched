@@ -27,6 +27,7 @@ import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import app.marlboroadvance.mpvex.utils.media.ChecksumUtils
 import app.marlboroadvance.mpvex.utils.media.MediaInfoParser
 import `is`.xyz.mpv.MPVLib
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
@@ -1266,10 +1267,12 @@ class PlayerViewModel(
   // ==================== Video Aspect ====================
 
   fun applyCropForRatio(targetRatio: Double) {
+    val currentZoom = _videoZoom.value
     if (targetRatio <= 0) {
       MPVLib.setPropertyString("video-crop", "")
       MPVLib.setPropertyDouble("panscan", 0.0)
       MPVLib.setPropertyDouble("video-aspect-override", -1.0)
+      MPVLib.setPropertyDouble("video-zoom", currentZoom.toDouble())
       return
     }
     val vidW = MPVLib.getPropertyInt("video-params/w") ?: 0
@@ -1286,29 +1289,35 @@ class PlayerViewModel(
     val effectiveTargetRatio = if (isRotated) (1.0 / targetRatio) else targetRatio
     val currentRatio = vidW.toDouble() / vidH.toDouble()
 
-    val cropW: Int
-    val cropH: Int
-    val offsetX: Int
-    val offsetY: Int
+    val baseCropW: Double
+    val baseCropH: Double
 
     if (currentRatio > effectiveTargetRatio) {
       // Video is wider than target ratio (e.g. 19.5:9 cropped to 16:9):
       // Crop left and right sides symmetrically, replacing them with black bars!
-      cropH = vidH
-      cropW = (((vidH * effectiveTargetRatio).toInt()) / 2) * 2
-      offsetX = ((vidW - cropW) / 4) * 2
-      offsetY = 0
+      baseCropH = vidH.toDouble()
+      baseCropW = vidH * effectiveTargetRatio
     } else {
       // Video is taller/narrower than target ratio:
       // Crop top and bottom sides symmetrically, replacing them with black bars!
-      cropW = vidW
-      cropH = (((vidW / effectiveTargetRatio).toInt()) / 2) * 2
-      offsetX = 0
-      offsetY = ((vidH - cropH) / 4) * 2
+      baseCropW = vidW.toDouble()
+      baseCropH = vidW / effectiveTargetRatio
     }
+
+    // Apply positive zoom inside the crop box so the outer aspect ratio (and left/right black bars) stays locked
+    val scale = if (currentZoom > 0f) 2.0.pow(currentZoom.toDouble()) else 1.0
+    val cropW = (((baseCropW / scale).toInt() / 2) * 2).coerceIn(16, vidW)
+    val cropH = (((baseCropH / scale).toInt() / 2) * 2).coerceIn(16, vidH)
+    val offsetX = (((vidW - cropW) / 2) / 2) * 2
+    val offsetY = (((vidH - cropH) / 2) / 2) * 2
 
     MPVLib.setPropertyDouble("panscan", 0.0)
     MPVLib.setPropertyDouble("video-aspect-override", -1.0)
+    MPVLib.setPropertyDouble("video-align-x", 0.0)
+    MPVLib.setPropertyDouble("video-align-y", 0.0)
+    MPVLib.setPropertyDouble("video-pan-x", 0.0)
+    MPVLib.setPropertyDouble("video-pan-y", 0.0)
+    MPVLib.setPropertyDouble("video-zoom", if (currentZoom < 0f) currentZoom.toDouble() else 0.0)
     MPVLib.setPropertyString("video-crop", "${cropW}x${cropH}+${offsetX}+${offsetY}")
   }
 
@@ -1322,12 +1331,14 @@ class PlayerViewModel(
         MPVLib.setPropertyString("video-crop", "")
         MPVLib.setPropertyDouble("panscan", 0.0)
         MPVLib.setPropertyDouble("video-aspect-override", -1.0)
+        MPVLib.setPropertyDouble("video-zoom", _videoZoom.value.toDouble())
       }
       VideoAspect.Crop -> {
         // To CROP: Reset aspect override and custom crop first, then set panscan
         MPVLib.setPropertyString("video-crop", "")
         MPVLib.setPropertyDouble("video-aspect-override", -1.0)
         MPVLib.setPropertyDouble("panscan", 1.0)
+        MPVLib.setPropertyDouble("video-zoom", _videoZoom.value.toDouble())
       }
       VideoAspect.Stretch -> {
         MPVLib.setPropertyString("video-crop", "")
@@ -1354,6 +1365,7 @@ class PlayerViewModel(
         // This prevents the brief flash of Fit mode
         MPVLib.setPropertyDouble("video-aspect-override", screenRatio)
         MPVLib.setPropertyDouble("panscan", 0.0)
+        MPVLib.setPropertyDouble("video-zoom", _videoZoom.value.toDouble())
       }
       VideoAspect.Custom -> {
         val targetRatio = playerPreferences.customCropAspectRatio.get()
@@ -1387,8 +1399,11 @@ class PlayerViewModel(
     MPVLib.setPropertyString("video-crop", "")
     MPVLib.setPropertyDouble("panscan", 0.0)
     MPVLib.setPropertyDouble("video-aspect-override", ratio)
+    MPVLib.setPropertyDouble("video-zoom", _videoZoom.value.toDouble())
+    _videoAspect.value = VideoAspect.Fit
     _currentAspectRatio.value = ratio
     if (playerPreferences.rememberAspectRatio.get()) {
+      playerPreferences.defaultVideoAspect.set(VideoAspect.Fit)
       playerPreferences.defaultCustomAspectRatio.set(ratio)
     }
     playerUpdate.value = PlayerUpdates.AspectRatio
@@ -1467,6 +1482,14 @@ class PlayerViewModel(
     MPVLib.setPropertyDouble("video-align-y", 0.0)
     MPVLib.setPropertyDouble("video-pan-x", 0.0)
     MPVLib.setPropertyDouble("video-pan-y", 0.0)
+
+    if (_videoAspect.value == VideoAspect.Custom) {
+      val customCrop = playerPreferences.customCropAspectRatio.get()
+      if (customCrop > 0) {
+        applyCropForRatio(customCrop)
+        return
+      }
+    }
     MPVLib.setPropertyDouble("video-zoom", zoom.toDouble())
   }
 

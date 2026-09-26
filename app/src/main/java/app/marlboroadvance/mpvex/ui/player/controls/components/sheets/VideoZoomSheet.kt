@@ -58,9 +58,8 @@ fun VideoZoomSheet(
 
   val currentOnSetVideoZoom by rememberUpdatedState(onSetVideoZoom)
 
-  LaunchedEffect(Unit) {
-    val mpvZoom = MPVLib.getPropertyDouble("video-zoom")?.toFloat() ?: videoZoom
-    zoom = mpvZoom
+  LaunchedEffect(videoZoom) {
+    zoom = videoZoom
   }
 
   LaunchedEffect(zoom) {
