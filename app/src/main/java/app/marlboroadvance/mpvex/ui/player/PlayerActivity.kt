@@ -1142,9 +1142,9 @@ class PlayerActivity :
         }.getOrNull()
 
         if (splitResult != null) {
-          MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
           MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", "[中] ${splitResult.primaryTitle}")
           MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", "[英] ${splitResult.secondaryTitle}")
+          MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
           MPVLib.command("sub-add", subfile, "auto", "[原版] ${file?.name ?: suburi.lastPathSegment}")
 
           if (flag == "select") {
@@ -1163,35 +1163,43 @@ class PlayerActivity :
                 val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
 
                 if (id > 0) {
-                  if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
-                    biId = id
-                  }
                   if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
                     priId = id
                   }
                   if (extPath == splitResult.secondaryFile.absolutePath || title.startsWith("[英]")) {
                     secId = id
                   }
+                  if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
+                    biId = id
+                  }
                 }
               }
-              if (biId != null && priId != null && secId != null) break
+              if (priId != null && secId != null) break
             }
 
             if (mode == app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) {
-              if (biId != null) {
+              if (priId != null && secId != null) {
+                MPVLib.setPropertyInt("sid", priId)
+                MPVLib.setPropertyInt("secondary-sid", secId)
+                val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
+                val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
+                MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
+                MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
+                applySecondarySubStyleOverrides(subtitlesPreferences)
+              } else if (biId != null) {
                 MPVLib.setPropertyInt("sid", biId)
                 MPVLib.setPropertyString("secondary-sid", "no")
                 applySecondarySubStyleOverrides(subtitlesPreferences)
               } else if (priId != null) {
                 MPVLib.setPropertyInt("sid", priId)
-                if (secId != null) {
-                  MPVLib.setPropertyInt("secondary-sid", secId)
-                  applySecondarySubStyleOverrides(subtitlesPreferences)
-                }
+                MPVLib.setPropertyString("secondary-sid", "no")
               }
             } else {
               if (priId != null) {
                 MPVLib.setPropertyInt("sid", priId)
+                MPVLib.setPropertyString("secondary-sid", "no")
+              } else if (biId != null) {
+                MPVLib.setPropertyInt("sid", biId)
                 MPVLib.setPropertyString("secondary-sid", "no")
               }
             }

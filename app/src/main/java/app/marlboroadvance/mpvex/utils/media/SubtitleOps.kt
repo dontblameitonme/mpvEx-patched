@@ -222,9 +222,9 @@ object SubtitleOps : KoinComponent {
           }.getOrNull()
 
           if (splitResult != null) {
-            MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
             MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", "[中] ${subtitle.name}")
             MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", splitResult.secondaryTitle)
+            MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
             // Also keep original untouched subtitle as fallback
             MPVLib.command("sub-add", subtitle.absolutePath, "auto", "[原版] ${subtitle.name}")
 
@@ -244,23 +244,33 @@ object SubtitleOps : KoinComponent {
                   val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
 
                   if (id > 0) {
-                    if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
-                      biId = id
-                    }
                     if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
                       priId = id
                     }
                     if (extPath == splitResult.secondaryFile.absolutePath || title.startsWith("[英]")) {
                       secId = id
                     }
+                    if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
+                      biId = id
+                    }
                   }
                 }
-                if (biId != null && priId != null && secId != null) break
+                if (priId != null && secId != null) break
               }
 
               if (mode == app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) {
-                // In Multi Mode: activate Solution 1 unified bilingual stream
-                if (biId != null) {
+                // In Multi Mode: activate dual tracks [中] + [英] with top priority
+                if (priId != null && secId != null) {
+                  MPVLib.setPropertyInt("sid", priId)
+                  MPVLib.setPropertyInt("secondary-sid", secId)
+                  val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
+                  val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
+                  MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
+                  MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
+                  applySecondarySubStyleOverrides(subtitlesPreferences)
+                  hasSelectedPrimary = true
+                  Log.d(TAG, "Autoload bilingual subtitle active: sid=$priId ([中]), secondary-sid=$secId ([英])")
+                } else if (biId != null) {
                   MPVLib.setPropertyInt("sid", biId)
                   MPVLib.setPropertyString("secondary-sid", "no")
                   applySecondarySubStyleOverrides(subtitlesPreferences)
@@ -268,14 +278,6 @@ object SubtitleOps : KoinComponent {
                   Log.d(TAG, "Autoload bilingual subtitle active: sid=$biId ([双语])")
                 } else if (priId != null) {
                   MPVLib.setPropertyInt("sid", priId)
-                  if (secId != null) {
-                    MPVLib.setPropertyInt("secondary-sid", secId)
-                    val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
-                    val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
-                    MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
-                    MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
-                    applySecondarySubStyleOverrides(subtitlesPreferences)
-                  }
                   hasSelectedPrimary = true
                 }
               } else {
@@ -285,6 +287,10 @@ object SubtitleOps : KoinComponent {
                   MPVLib.setPropertyString("secondary-sid", "no")
                   hasSelectedPrimary = true
                   Log.d(TAG, "Autoload single subtitle active: sid=$priId ([中])")
+                } else if (biId != null) {
+                  MPVLib.setPropertyInt("sid", biId)
+                  MPVLib.setPropertyString("secondary-sid", "no")
+                  hasSelectedPrimary = true
                 }
               }
             }
