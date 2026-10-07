@@ -505,6 +505,7 @@ class PlayerViewModel(
                 MPVLib.setPropertyInt("sid", priId)
                 if (secId != null) {
                   MPVLib.setPropertyInt("secondary-sid", secId)
+                  syncSecondarySubtitleDelayAndSpeed()
                   applySecondarySubStyleOverrides(subtitlesPreferences)
                 }
               }
@@ -877,6 +878,7 @@ class PlayerViewModel(
         if (pairedSec != null && secondarySid <= 0) {
           MPVLib.setPropertyInt("secondary-sid", pairedSec.id)
           savedMultiSecondaryTrackId = pairedSec.id
+          syncSecondarySubtitleDelayAndSpeed()
           applySecondarySubStyleOverrides(subtitlesPreferences)
         }
       }
@@ -891,6 +893,7 @@ class PlayerViewModel(
       } else {
         MPVLib.setPropertyInt("secondary-sid", id)
         savedMultiSecondaryTrackId = id
+        syncSecondarySubtitleDelayAndSpeed()
         applySecondarySubStyleOverrides(subtitlesPreferences)
       }
       return
@@ -940,6 +943,7 @@ class PlayerViewModel(
             MPVLib.setPropertyInt("secondary-sid", id)
             savedMultiPrimaryTrackId = prevSecondary
             savedMultiSecondaryTrackId = id
+            syncSecondarySubtitleDelayAndSpeed()
             applySecondarySubStyleOverrides(subtitlesPreferences)
           }
         } else {
@@ -951,6 +955,7 @@ class PlayerViewModel(
         if (primarySid != id) {
           MPVLib.setPropertyInt("secondary-sid", id)
           savedMultiSecondaryTrackId = id
+          syncSecondarySubtitleDelayAndSpeed()
           applySecondarySubStyleOverrides(subtitlesPreferences)
         }
       }
@@ -959,6 +964,17 @@ class PlayerViewModel(
         savedMultiPrimaryTrackId = id
       }
     }
+  }
+
+  /**
+   * Synchronizes the secondary subtitle track's delay and speed with the primary
+   * subtitle track so both tracks remain perfectly in sync.
+   */
+  fun syncSecondarySubtitleDelayAndSpeed() {
+    val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
+    val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
+    MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
+    MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
   }
 
   /**

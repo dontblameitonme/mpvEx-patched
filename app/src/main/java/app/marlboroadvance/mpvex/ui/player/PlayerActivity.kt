@@ -2254,9 +2254,11 @@ class PlayerActivity :
     }
 
     MPVLib.setPropertyDouble("sub-delay", subDelay)
+    MPVLib.setPropertyDouble("secondary-sub-delay", subDelay)
     MPVLib.setPropertyDouble("speed", state.playbackSpeed)
     MPVLib.setPropertyDouble("audio-delay", audioDelay)
     MPVLib.setPropertyDouble("sub-speed", state.subSpeed)
+    MPVLib.setPropertyDouble("secondary-sub-speed", state.subSpeed)
 
     // Restore video zoom from saved state
     viewModel.setVideoZoom(state.videoZoom)
@@ -2307,10 +2309,12 @@ class PlayerActivity :
       val matchedSec = tracks.firstOrNull { it.title == targetSecTitle || it.lang == targetSecTitle }
       if (matchedSec != null) {
         player.secondarySid = matchedSec.id
+        viewModel.syncSecondarySubtitleDelayAndSpeed()
         applySecondarySubStyleOverrides(subtitlesPreferences)
         Log.d(TAG, "Reconciled secondary subtitle by title '$targetSecTitle' -> id ${matchedSec.id}")
       } else if (state.secondarySid > 0) {
         player.secondarySid = state.secondarySid
+        viewModel.syncSecondarySubtitleDelayAndSpeed()
         applySecondarySubStyleOverrides(subtitlesPreferences)
       }
     } else if (state.secondarySid <= 0) {
@@ -2327,14 +2331,18 @@ class PlayerActivity :
   /**
    * Applies default settings when no saved state exists.
    *
-   * Sets subtitle speed to user default if not present in saved state.
+   * Sets subtitle speed and delay to user defaults for both primary and secondary tracks.
    *
    * @param state The saved playback state entity (null if no saved state)
    */
   private fun applyDefaultSettings(state: PlaybackStateEntity?) {
     if (state == null) {
       val defaultSubSpeed = subtitlesPreferences.defaultSubSpeed.get().toDouble()
+      val defaultSubDelay = subtitlesPreferences.defaultSubDelay.get() / 1000.0
+      MPVLib.setPropertyDouble("sub-delay", defaultSubDelay)
+      MPVLib.setPropertyDouble("secondary-sub-delay", defaultSubDelay)
       MPVLib.setPropertyDouble("sub-speed", defaultSubSpeed)
+      MPVLib.setPropertyDouble("secondary-sub-speed", defaultSubSpeed)
     }
   }
 

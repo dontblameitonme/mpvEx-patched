@@ -270,6 +270,10 @@ object SubtitleOps : KoinComponent {
                   MPVLib.setPropertyInt("sid", priId)
                   if (secId != null) {
                     MPVLib.setPropertyInt("secondary-sid", secId)
+                    val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
+                    val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
+                    MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
+                    MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
                     applySecondarySubStyleOverrides(subtitlesPreferences)
                   }
                   hasSelectedPrimary = true
