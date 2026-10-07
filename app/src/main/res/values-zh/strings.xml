@@ -6,4 +6,7 @@
   <string name="player_sheets_sub_role_primary">主字幕</string>
   <string name="player_sheets_sub_role_secondary">第二字幕</string>
   <string name="player_sheets_sub_role_bilingual">双语流</string>
+  <string name="player_sheets_sub_embedded">自带字幕</string>
+  <string name="player_sheets_sub_external">外挂字幕</string>
+  <string name="player_sheets_sub_selected_prefix">已选: %s</string>
 </resources>
