@@ -80,12 +80,14 @@ object MediaUtils {
             } else {
               source
             }
-            val intent = Intent(Intent.ACTION_VIEW, Uri.fromFile(java.io.File(filePath)))
+            // [PATCHED & UPSTREAM SYNC]: Create file Intent with internal_launch flag and explicit absolute path
+            val file = java.io.File(filePath)
+            val intent = Intent(Intent.ACTION_VIEW, Uri.fromFile(file))
             intent.setClass(context, PlayerActivity::class.java)
             intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             intent.putExtra("internal_launch", true)
-            intent.putExtra("file_path", filePath)
+            intent.putExtra("file_path", file.absolutePath)
             launchSource?.let { intent.putExtra("launch_source", it) }
             context.startActivity(intent)
             return

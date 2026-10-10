@@ -145,6 +145,7 @@ jobs:
             <p class='note'>Built automatically from the <code>dev</code> branch.</p>
           </body>
           </html>" > ./public/index.html
+          cp docs/privacy-policy.html ./public/privacy-policy.html 2>/dev/null || true
 
       - name: Upload to GitHub Pages
         uses: actions/upload-pages-artifact@v3

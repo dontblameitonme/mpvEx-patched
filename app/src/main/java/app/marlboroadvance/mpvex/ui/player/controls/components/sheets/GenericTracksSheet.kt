@@ -102,8 +102,9 @@ fun AddTrackRow(
 fun getTrackTitle(
   track: TrackNode,
 ): String {
-  // Handle external subtitles
-  if (track.isSubtitle && track.external == true) {
+  // [PATCHED & UPSTREAM SYNC]: Handle external subtitles and external audio tracks
+  // Prioritizes custom track title (e.g., [中], [英], [双语]) if present, falling back to decoded filename.
+  if ((track.isSubtitle || track.isAudio) && track.external == true) {
     val displayTitle = if (!track.title.isNullOrBlank()) {
       track.title
     } else if (track.externalFilename != null) {

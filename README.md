@@ -3,12 +3,14 @@
 # mpvExtended (Patched Edition)
 [![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/marlboro-advance/mpvex.svg?logo=github&label=GitHub&cacheSeconds=3600)](https://github.com/marlboro-advance/mpvex/releases/latest)
 [![GitHub all releases](https://img.shields.io/github/downloads/marlboro-advance/mpvex/total?logo=github&cacheSeconds=3600)](https://github.com/marlboro-advance/mpvex/releases/latest)
+[![Privacy Policy](https://img.shields.io/badge/Privacy%20Policy-View-brightgreen?logo=shield)](https://marlboro-advance.github.io/mpvEx/privacy-policy.html)
 
 > This repository is a custom patched edition of [mpvExtended](https://github.com/marlboro-advance/mpvEx), featuring extensive refactoring and enhancements for **smart bilingual subtitle separation with independent rendering control**, **dynamic height-based volume gesture sensitivity**, **synchronized bilingual subtitle delay & speed**, and **deep performance optimizations eliminating cold-start and UI jank**.
 
 ---
 
-## 🛠️ Patched Features & Maintenance Guide
+<details>
+<summary><h2>🛠️ Patched Features & Maintenance Guide (Click to expand)</h2></summary>
 
 ### 1. Smart Bilingual Subtitle Splitting & Independent Secondary Subtitle Rendering
 * **Background & Technical Challenges**:
@@ -77,4 +79,6 @@
     * **Single Mode**: Renders standard radio-style single selection, clears `secondary-sid`, and loads pure single-language tracks (`[中]` or `[英]`).
     * **Multi Mode**: Automatically activates the non-overlapping bilingual stream (`[双语]`) or allows paired dual-track selection with visual role badges (`[Primary]`, `[Secondary]`, `[Bilingual]`).
     * **Global Default Configuration**: Added `subtitleMode` to [SubtitlesPreferences.kt](app/src/main/java/app/marlboroadvance/mpvex/preferences/SubtitlesPreferences.kt) and [SubtitlesPreferencesScreen.kt](app/src/main/java/app/marlboroadvance/mpvex/ui/preferences/SubtitlesPreferencesScreen.kt) allowing users to configure their preferred default startup mode.
+
+</details>
 
