@@ -231,6 +231,7 @@ class PlayerActivity :
   private var noisyReceiverRegistered = false
   private var mpvInitialized = false // Track MPV initialization state
   private var savePlaybackStateJob: kotlinx.coroutines.Job? = null // Track ongoing save job
+  private var subtitleReconciliationJob: kotlinx.coroutines.Job? = null // Reactive auto-restoration job for subtitles
   private var wasPlayingBeforePause = false // Track if video was playing before pause
 
   // ==================== Background Playback ====================
@@ -609,6 +610,7 @@ class PlayerActivity :
         }
         Log.d(TAG, "Save playback state job completed")
       }
+      subtitleReconciliationJob?.cancel()
 
       cleanupMPV()
       cleanupAudio()
@@ -1817,9 +1819,14 @@ class PlayerActivity :
         }
       }
 
-      // Reconcile saved subtitle tracks after autoloading
+      // Reconcile saved subtitle tracks reactively (matches by title as soon as external/split tracks arrive)
       if (hasState) {
-        reconcileSavedSubtitles()
+        val state = playbackStateRepository.getVideoDataByTitle(mediaIdentifier)
+        if (state != null) {
+          withContext(Dispatchers.Main) {
+            startSubtitleReconciliation(state)
+          }
+        }
       }
 
       // Apply track selection logic (defaults only apply when no saved state)
@@ -2164,8 +2171,12 @@ class PlayerActivity :
         val subTracks = viewModel.subtitleTracks.value
         val primaryTrack = subTracks.firstOrNull { it.id == effectiveSid }
         val secondaryTrack = subTracks.firstOrNull { it.id == effectiveSecondarySid }
-        val selectedSubTitle = primaryTrack?.title?.ifBlank { primaryTrack.lang } ?: primaryTrack?.lang
-        val selectedSecondarySubTitle = secondaryTrack?.title?.ifBlank { secondaryTrack.lang } ?: secondaryTrack?.lang
+        val selectedSubTitle = primaryTrack?.title?.ifBlank { primaryTrack.lang }
+          ?: primaryTrack?.externalFilename?.let { Uri.decode(it).substringAfterLast("/") }
+          ?: primaryTrack?.lang
+        val selectedSecondarySubTitle = secondaryTrack?.title?.ifBlank { secondaryTrack.lang }
+          ?: secondaryTrack?.externalFilename?.let { Uri.decode(it).substringAfterLast("/") }
+          ?: secondaryTrack?.lang
         val selectedSubMode = subtitlesPreferences.subtitleMode.get().name
 
         val currentUri = playlist.getOrNull(playlistIndex)
@@ -2256,20 +2267,24 @@ class PlayerActivity :
     }
 
     // Always restore subtitle and audio tracks from saved state
-    // User's manual selection has highest priority
-    if (state.sid > 0) {
-      player.sid = state.sid
-      Log.d(TAG, "Restored primary subtitle track: ${state.sid} (user selection)")
-      if (state.secondarySid > 0 && state.secondarySid != state.sid) {
-        player.secondarySid = state.secondarySid
-        Log.d(TAG, "Restored secondary subtitle track: ${state.secondarySid} (user selection)")
-      } else {
+    // User's manual selection has highest priority. If a specific title was saved,
+    // startSubtitleReconciliation will match and activate it reactively once tracks load.
+    val hasSpecificSavedTitle = !state.selectedSubTitle.isNullOrBlank() || !state.selectedSecondarySubTitle.isNullOrBlank()
+    if (!hasSpecificSavedTitle) {
+      if (state.sid > 0) {
+        player.sid = state.sid
+        Log.d(TAG, "Restored primary subtitle track by numeric id: ${state.sid} (user selection)")
+        if (state.secondarySid > 0 && state.secondarySid != state.sid) {
+          player.secondarySid = state.secondarySid
+          Log.d(TAG, "Restored secondary subtitle track by numeric id: ${state.secondarySid} (user selection)")
+        } else {
+          player.secondarySid = -1
+        }
+      } else if (state.secondarySid > 0) {
+        player.sid = state.secondarySid
         player.secondarySid = -1
+        Log.d(TAG, "Promoted saved secondary subtitle track ${state.secondarySid} to primary: single subtitle must stay at bottom")
       }
-    } else if (state.secondarySid > 0) {
-      player.sid = state.secondarySid
-      player.secondarySid = -1
-      Log.d(TAG, "Promoted saved secondary subtitle track ${state.secondarySid} to primary: single subtitle must stay at bottom")
     }
 
     if (state.aid > 0) {
@@ -2302,53 +2317,75 @@ class PlayerActivity :
   }
 
   /**
-   * Reconciles subtitle selection after autoloading matching external/split subtitles.
-   * Matches tracks by title rather than fragile numeric IDs.
+   * Reactively reconciles saved subtitle selection after loading media.
+   * Continually observes [viewModel.subtitleTracks] so that as soon as external
+   * or auto-split subtitles arrive asynchronously (via sub-add), the user's previously
+   * saved subtitle tracks are immediately matched by title/filename and activated.
    */
-  private suspend fun reconcileSavedSubtitles() {
-    val state = playbackStateRepository.getVideoDataByTitle(mediaIdentifier) ?: return
-
-    // Allow mpv track-list event to process if tracks are still empty
-    var tracks = viewModel.subtitleTracks.value
-    if (tracks.isEmpty()) {
-      delay(50)
-      tracks = viewModel.subtitleTracks.value
-    }
-
-    val targetSubTitle = state.selectedSubTitle
-    if (!targetSubTitle.isNullOrBlank()) {
-      val matched = tracks.firstOrNull { it.title == targetSubTitle || it.lang == targetSubTitle }
-      if (matched != null) {
-        player.sid = matched.id
-        Log.d(TAG, "Reconciled primary subtitle by title '$targetSubTitle' -> id ${matched.id}")
-      } else if (state.sid > 0) {
-        player.sid = state.sid
-      }
-    } else if (state.sid <= 0) {
-      player.sid = -1
-    }
-
+  private fun startSubtitleReconciliation(state: PlaybackStateEntity) {
+    subtitleReconciliationJob?.cancel()
+    val targetPriTitle = state.selectedSubTitle
     val targetSecTitle = state.selectedSecondarySubTitle
-    if (!targetSecTitle.isNullOrBlank()) {
-      val matchedSec = tracks.firstOrNull { it.title == targetSecTitle || it.lang == targetSecTitle }
-      if (matchedSec != null) {
-        player.secondarySid = matchedSec.id
-        viewModel.syncSecondarySubtitleDelayAndSpeed()
-        applySecondarySubStyleOverrides(subtitlesPreferences)
-        Log.d(TAG, "Reconciled secondary subtitle by title '$targetSecTitle' -> id ${matchedSec.id}")
-      } else if (state.secondarySid > 0) {
-        player.secondarySid = state.secondarySid
-        viewModel.syncSecondarySubtitleDelayAndSpeed()
-        applySecondarySubStyleOverrides(subtitlesPreferences)
+
+    Log.d(TAG, "Starting reactive subtitle reconciliation: targetPri='$targetPriTitle', targetSec='$targetSecTitle', sid=${state.sid}, secondarySid=${state.secondarySid}")
+
+    // If both subtitles were explicitly disabled or not set:
+    if (targetPriTitle.isNullOrBlank() && targetSecTitle.isNullOrBlank()) {
+      if (state.sid <= 0) player.sid = -1
+      if (state.secondarySid <= 0) player.secondarySid = -1
+      return
+    }
+
+    subtitleReconciliationJob = lifecycleScope.launch {
+      // Allow up to 8 seconds for asynchronous external/split subtitles to finish loading
+      kotlinx.coroutines.withTimeoutOrNull(8000L) {
+        var priMatched = targetPriTitle.isNullOrBlank()
+        var secMatched = targetSecTitle.isNullOrBlank()
+
+        viewModel.subtitleTracks.collect { tracks ->
+          if (tracks.isEmpty()) return@collect
+
+          // Try matching primary subtitle
+          if (!priMatched && !targetPriTitle.isNullOrBlank()) {
+            val matchedPri = tracks.firstOrNull {
+              it.title == targetPriTitle ||
+                it.lang == targetPriTitle ||
+                it.externalFilename?.let { fn -> Uri.decode(fn).substringAfterLast("/") } == targetPriTitle
+            }
+            if (matchedPri != null) {
+              player.sid = matchedPri.id
+              priMatched = true
+              Log.d(TAG, "Reactive reconcile: Primary sub matched '$targetPriTitle' -> id ${matchedPri.id}")
+            }
+          }
+
+          // Try matching secondary subtitle
+          if (!secMatched && !targetSecTitle.isNullOrBlank()) {
+            val matchedSec = tracks.firstOrNull {
+              it.title == targetSecTitle ||
+                it.lang == targetSecTitle ||
+                it.externalFilename?.let { fn -> Uri.decode(fn).substringAfterLast("/") } == targetSecTitle
+            }
+            if (matchedSec != null) {
+              player.secondarySid = matchedSec.id
+              secMatched = true
+              viewModel.syncSecondarySubtitleDelayAndSpeed()
+              applySecondarySubStyleOverrides(subtitlesPreferences)
+              Log.d(TAG, "Reactive reconcile: Secondary sub matched '$targetSecTitle' -> id ${matchedSec.id}")
+            }
+          }
+
+          // If both required targets have been successfully reconciled, we are done!
+          if (priMatched && secMatched) {
+            Log.d(TAG, "Reactive reconcile: All saved subtitles successfully restored!")
+            subtitleReconciliationJob?.cancel()
+          }
+        }
       }
-    } else if (state.secondarySid <= 0) {
-      player.secondarySid = -1
     }
 
     if (state.videoZoom != 0f) {
-      withContext(Dispatchers.Main) {
-        viewModel.setVideoZoom(state.videoZoom)
-      }
+      viewModel.setVideoZoom(state.videoZoom)
     }
   }
 

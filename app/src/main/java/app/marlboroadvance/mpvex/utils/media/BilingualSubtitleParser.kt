@@ -36,11 +36,31 @@ data class BilingualSplitResult(
  */
 object BilingualSubtitleParser {
   private const val TAG = "BilingualSubParser"
+  private const val CACHE_DIR_NAME = "bilingual_subs_v3"
 
   private val CJK_REGEX = Regex("[\\u4e00-\\u9fff\\u3400-\\u4dbf]")
   private val LATIN_REGEX = Regex("[a-zA-Z]")
   private val TAG_REGEX = Regex("\\{[^}]*\\}")
   private val ASS_SPLIT_REGEX = Regex("\\\\[Nn]")
+
+  /**
+   * Cleans invisible Unicode bidirectional control characters (LRE, RLE, PDF, LRO, RLO, LRM, RLM),
+   * byte order mark, and zero-width spaces common in web-ripped subtitles (e.g. \u202a).
+   */
+  private val BIDI_AND_CONTROL_CHARS_REGEX = Regex("[\\u202a-\\u202e\\u200e\\u200f\\ufeff\\u200b]")
+
+  /**
+   * Fixes common UTF-8 / Latin-1 non-breaking space mojibake (e.g. Â\u00A0 or Â followed by space),
+   * normalizing them to a standard ASCII space.
+   */
+  private val MOJIBAKE_NBSP_REGEX = Regex("(?:\\u00C2|Â)[\\u00A0\\s]+|[\\u00A0]")
+
+  fun sanitizeSubtitleText(text: String): String {
+    if (text.isEmpty()) return text
+    var result = BIDI_AND_CONTROL_CHARS_REGEX.replace(text, "")
+    result = MOJIBAKE_NBSP_REGEX.replace(result, " ")
+    return result.trim()
+  }
 
   /**
    * Cleans inline ASS override tags from secondary subtitles so mpv's
@@ -62,7 +82,7 @@ object BilingualSubtitleParser {
     val ext = sourceFile.extension.lowercase(Locale.ROOT)
     if (ext !in listOf("ass", "ssa", "srt")) return null
 
-    val cacheDir = File(context.cacheDir, "bilingual_subs_v2")
+    val cacheDir = File(context.cacheDir, CACHE_DIR_NAME)
     if (!cacheDir.exists()) cacheDir.mkdirs()
 
     val hashKey = ChecksumUtils.getCRC32(
@@ -120,7 +140,7 @@ object BilingualSubtitleParser {
       val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
       if (ext !in listOf("ass", "ssa", "srt")) return null
 
-      val cacheDir = File(context.cacheDir, "bilingual_subs_v2")
+      val cacheDir = File(context.cacheDir, CACHE_DIR_NAME)
       if (!cacheDir.exists()) cacheDir.mkdirs()
 
       val hashKey = ChecksumUtils.getCRC32("${uri}_${rawBytes.size}")
@@ -293,7 +313,9 @@ object BilingualSubtitleParser {
       val textLines = lines.drop(timeLineIdx + 1)
       val linePieces = textLines.flatMap { line ->
         line.split(Regex("(?i)<br\\s*/?>|\\\\N"))
-      }.map { it.replace(Regex("<[^>]*>"), "").trim() }.filter { it.isNotEmpty() }
+      }.map { 
+        sanitizeSubtitleText(it.replace(Regex("<[^>]*>"), ""))
+      }.filter { it.isNotEmpty() }
 
       val priParts = mutableListOf<String>()
       val secParts = mutableListOf<String>()
@@ -345,7 +367,7 @@ object BilingualSubtitleParser {
       val secParts = mutableListOf<String>()
 
       for (p in subParts) {
-        val pClean = TAG_REGEX.replace(p, "").trim()
+        val pClean = sanitizeSubtitleText(TAG_REGEX.replace(p, ""))
         if (pClean.isEmpty()) continue
         val hasCjk = CJK_REGEX.containsMatchIn(pClean)
         val hasLatin = LATIN_REGEX.containsMatchIn(pClean)
@@ -473,17 +495,23 @@ object BilingualSubtitleParser {
       val startAss = msToAssTime(cue.startMs)
       val endAss = msToAssTime(cue.endMs)
 
-      val priText = if (cue.priParts.isNotEmpty()) cue.priParts.joinToString("\\N") else ""
-      val cleanedSec = if (cue.secParts.isNotEmpty()) {
-        cue.secParts
-          .map { TAG_REGEX.replace(it, "").replace("\\h", " ").trim() }
-          .filter { it.isNotEmpty() }
-          .joinToString("\\N")
-      } else ""
+      val priCleanList = cue.priParts.map { sanitizeSubtitleText(it) }.filter { it.isNotEmpty() }
+      val secCleanList = cue.secParts
+        .map { TAG_REGEX.replace(it, "").replace("\\h", " ") }
+        .map { sanitizeSubtitleText(it) }
+        .filter { it.isNotEmpty() }
+
+      val priText = priCleanList.joinToString("\\N")
+      val cleanedSec = secCleanList.joinToString("\\N")
 
       // 1. Primary ASS dialogue (pure Chinese)
+      // When secondary subtitle has multiple lines (secCleanList.size > 1),
+      // dynamically elevate primary subtitle MarginV so it stays cleanly above secondary subtitle.
       if (priText.isNotEmpty()) {
-        priWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priText")
+        val secLineCount = secCleanList.size
+        // 56 ASS pixels per extra line of secondary subtitle ensures zero multi-line overlap
+        val dynamicMarginV = if (secLineCount > 1) (secLineCount - 1) * 56 else 0
+        priWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,$dynamicMarginV,,$priText")
         priWriter.newLine()
       }
 
@@ -510,7 +538,7 @@ object BilingualSubtitleParser {
   private fun cleanAssOverrideTags(text: String): String {
     var cleaned = ASS_OVERRIDE_TAGS_REGEX.replace(text, "")
     cleaned = cleaned.replace(Regex("\\{\\s*\\}"), "")
-    return cleaned.trim()
+    return sanitizeSubtitleText(cleaned)
   }
 
   fun parseTimeToMs(timeStr: String): Long? {
