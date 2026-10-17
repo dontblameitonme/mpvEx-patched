@@ -36,7 +36,7 @@ data class BilingualSplitResult(
  */
 object BilingualSubtitleParser {
   private const val TAG = "BilingualSubParser"
-  private const val CACHE_DIR_NAME = "bilingual_subs_v3"
+  private const val CACHE_DIR_NAME = "bilingual_subs_v4"
 
   private val CJK_REGEX = Regex("[\\u4e00-\\u9fff\\u3400-\\u4dbf]")
   private val LATIN_REGEX = Regex("[a-zA-Z]")
@@ -63,11 +63,14 @@ object BilingualSubtitleParser {
   }
 
   /**
-   * Cleans inline ASS override tags from secondary subtitles so mpv's
-   * secondary-sub-* properties can style font size, color, border, and position.
+   * Cleans all inline ASS style and override tags ({...}) and hard spaces (\\h),
+   * leaving pure subtitle text styled strictly by the user's mpvEx preferences.
    */
-  private val ASS_OVERRIDE_TAGS_REGEX =
-    Regex("\\\\(fs\\d+|fn[^\\\\}]+|3c&H[0-9a-fA-F]+&|[1234]?c&H[0-9a-fA-F]+&|b[01]|shad\\d+|bord\\d+)")
+  fun cleanAssTags(text: String): String {
+    if (text.isEmpty()) return text
+    val withoutTags = TAG_REGEX.replace(text, "").replace("\\h", " ")
+    return sanitizeSubtitleText(withoutTags)
+  }
 
   data class CueItem(
     val startMs: Long,
@@ -189,8 +192,10 @@ object BilingualSubtitleParser {
     bilingualFile: File,
     baseName: String,
   ): BilingualSplitResult? {
-    val playResX = Regex("PlayResX:\\s*(\\d+)", RegexOption.IGNORE_CASE).find(content)?.groupValues?.get(1)?.toIntOrNull() ?: 1920
-    val playResY = Regex("PlayResY:\\s*(\\d+)", RegexOption.IGNORE_CASE).find(content)?.groupValues?.get(1)?.toIntOrNull() ?: 1080
+    // Force standard 1080p canvas for all split ASS subtitles, eliminating font scaling bugs
+    // caused by legacy low-resolution canvases (e.g. 288p, 360p, 576p)
+    val playResX = 1920
+    val playResY = 1080
 
     val cues = parseAssToCues(content)
     val bilingualCount = cues.count { it.priParts.isNotEmpty() && it.secParts.isNotEmpty() }
@@ -367,22 +372,22 @@ object BilingualSubtitleParser {
       val secParts = mutableListOf<String>()
 
       for (p in subParts) {
-        val pClean = sanitizeSubtitleText(TAG_REGEX.replace(p, ""))
+        val pClean = cleanAssTags(p)
         if (pClean.isEmpty()) continue
         val hasCjk = CJK_REGEX.containsMatchIn(pClean)
         val hasLatin = LATIN_REGEX.containsMatchIn(pClean)
 
         if (hasCjk) {
-          priParts.add(cleanAssOverrideTags(p))
+          priParts.add(pClean)
         } else if (hasLatin) {
-          secParts.add(cleanAssOverrideTags(p))
+          secParts.add(pClean)
         } else {
           if (priParts.isNotEmpty()) {
-            priParts.add(cleanAssOverrideTags(p))
+            priParts.add(pClean)
           } else if (secParts.isNotEmpty()) {
-            secParts.add(cleanAssOverrideTags(p))
+            secParts.add(pClean)
           } else {
-            priParts.add(cleanAssOverrideTags(p))
+            priParts.add(pClean)
           }
         }
       }
@@ -495,11 +500,8 @@ object BilingualSubtitleParser {
       val startAss = msToAssTime(cue.startMs)
       val endAss = msToAssTime(cue.endMs)
 
-      val priCleanList = cue.priParts.map { sanitizeSubtitleText(it) }.filter { it.isNotEmpty() }
-      val secCleanList = cue.secParts
-        .map { TAG_REGEX.replace(it, "").replace("\\h", " ") }
-        .map { sanitizeSubtitleText(it) }
-        .filter { it.isNotEmpty() }
+      val priCleanList = cue.priParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
+      val secCleanList = cue.secParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
 
       val priText = priCleanList.joinToString("\\N")
       val cleanedSec = secCleanList.joinToString("\\N")
@@ -533,12 +535,6 @@ object BilingualSubtitleParser {
         biWriter.newLine()
       }
     }
-  }
-
-  private fun cleanAssOverrideTags(text: String): String {
-    var cleaned = ASS_OVERRIDE_TAGS_REGEX.replace(text, "")
-    cleaned = cleaned.replace(Regex("\\{\\s*\\}"), "")
-    return sanitizeSubtitleText(cleaned)
   }
 
   fun parseTimeToMs(timeStr: String): Long? {
