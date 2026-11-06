@@ -36,7 +36,7 @@ data class BilingualSplitResult(
  */
 object BilingualSubtitleParser {
   private const val TAG = "BilingualSubParser"
-  private const val CACHE_DIR_NAME = "bilingual_subs_v4"
+  private const val CACHE_DIR_NAME = "bilingual_subs_v5"
 
   private val CJK_REGEX = Regex("[\\u4e00-\\u9fff\\u3400-\\u4dbf]")
   private val LATIN_REGEX = Regex("[a-zA-Z]")
@@ -68,7 +68,8 @@ object BilingualSubtitleParser {
    */
   fun cleanAssTags(text: String): String {
     if (text.isEmpty()) return text
-    val withoutTags = TAG_REGEX.replace(text, "").replace("\\h", " ")
+    val sanitized = text.replace(Regex("\\{\\\\p[1-9]\\}[^\\{]*(\\{\\\\p0\\}|$)"), "")
+    val withoutTags = TAG_REGEX.replace(sanitized, "").replace("\\h", " ")
     return sanitizeSubtitleText(withoutTags)
   }
 
@@ -807,5 +808,18 @@ fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
   val scaleValue = if (scaleByWindow) "yes" else "no"
   MPVLib.setPropertyString("sub-ass-scale-with-window", scaleValue)
   MPVLib.setPropertyString("sub-ass-force-margins", scaleValue)
-  MPVLib.setPropertyFloat("secondary-sub-scale", subScale)
+
+  // Calculate dynamic secondary-sub-scale ratio so any secondary track (including plain text and embedded subtitles)
+  // accurately reflects user's secondary font size preferences instead of blowing up to full 720p base size
+  val priFontSize = preferences.fontSize.get().coerceAtLeast(1)
+  val effectiveScaleRatio = (fontSize.toFloat() / priFontSize.toFloat()) * subScale
+  MPVLib.setPropertyFloat("secondary-sub-scale", effectiveScaleRatio)
+
+  // Safely forward secondary-sub-* properties supported by newer mpv builds
+  runCatching { MPVLib.setPropertyString("secondary-sub-font", assFont) }
+  runCatching { MPVLib.setPropertyString("secondary-sub-color", textColor.toAssColorString()) }
+  runCatching { MPVLib.setPropertyString("secondary-sub-border-color", borderColor.toAssColorString()) }
+  runCatching { MPVLib.setPropertyFloat("secondary-sub-border-size", borderSize) }
+  runCatching { MPVLib.setPropertyBoolean("secondary-sub-bold", isBold) }
+  runCatching { MPVLib.setPropertyBoolean("secondary-sub-italic", isItalic) }
 }

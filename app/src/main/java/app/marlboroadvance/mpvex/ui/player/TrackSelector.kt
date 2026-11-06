@@ -242,7 +242,7 @@ class TrackSelector(
           .map { it.trim().lowercase() }
           .filter { it.isNotEmpty() }
       }
-      if (preferredLangs.isEmpty()) preferredLangs = listOf("eng", "en")
+      if (preferredLangs.isEmpty()) preferredLangs = listOf("chi", "zho", "zh", "chs", "cht", "eng", "en")
 
       val ignoreSubs = listOf("signs", "songs", "lyrics", "forced", "sdh", "colored", "karaoke")
       val subTracks = tracks.filter { it.type == "sub" }
@@ -328,6 +328,7 @@ class TrackSelector(
                 Log.d(TAG, "Smart Sub: Clean Match (id=${track.id}) [Applied]")
                 MPVLib.setPropertyInt("sid", track.id)
               }
+              autoSelectComplementarySecondaryTrack(subTracks, track.id)
               return
             }
           }
@@ -344,6 +345,7 @@ class TrackSelector(
               Log.d(TAG, "Smart Sub: Fallback Match (id=${track.id}) [Applied]")
               MPVLib.setPropertyInt("sid", track.id)
             }
+            autoSelectComplementarySecondaryTrack(subTracks, track.id)
             return
           }
         }
@@ -351,6 +353,33 @@ class TrackSelector(
 
     } catch (e: Exception) {
       Log.e(TAG, "Subtitle selection failed", e)
+    }
+  }
+
+  private fun autoSelectComplementarySecondaryTrack(subTracks: List<Track>, primaryTrackId: Int) {
+    if (subtitlesPreferences.subtitleMode.get() != app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) return
+    val currentSecSid = MPVLib.getPropertyInt("secondary-sid") ?: 0
+    if (currentSecSid > 0) return
+
+    val priTrack = subTracks.firstOrNull { it.id == primaryTrackId } ?: return
+    val isChinese = priTrack.lang in setOf("chi", "zho", "zh", "chs", "cht") ||
+                    priTrack.title.contains("中") || priTrack.title.contains("chs") || priTrack.title.contains("cht") ||
+                    priTrack.title.contains("chinese")
+    val isEnglish = priTrack.lang in setOf("eng", "en") ||
+                    priTrack.title.contains("英") || priTrack.title.contains("eng") || priTrack.title.contains("english")
+
+    val candidate = if (isChinese) {
+      subTracks.firstOrNull { it.id != primaryTrackId && !it.forced && (it.lang in setOf("eng", "en") || it.title.contains("eng") || it.title.contains("英")) }
+    } else if (isEnglish) {
+      subTracks.firstOrNull { it.id != primaryTrackId && !it.forced && (it.lang in setOf("chi", "zho", "zh", "chs", "cht") || it.title.contains("chs") || it.title.contains("中")) }
+    } else {
+      null
+    }
+
+    if (candidate != null) {
+      Log.d(TAG, "Smart Sub: Auto-paired complementary secondary track in Multi mode (id=${candidate.id}) [Applied]")
+      MPVLib.setPropertyInt("secondary-sid", candidate.id)
+      applySecondarySubStyleOverrides(subtitlesPreferences)
     }
   }
 }

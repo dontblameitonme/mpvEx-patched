@@ -208,8 +208,17 @@ object SubtitleOps : KoinComponent {
       videoDirectory.listFiles()?.filter { file ->
         file.isFile &&
           isSubtitleFile(file.name) &&
-          file.nameWithoutExtension.startsWith(baseName, ignoreCase = true)
-      } ?: emptyList()
+          isMatchingSubtitle(baseName, file.nameWithoutExtension)
+      }?.sortedWith(compareByDescending<File> { file ->
+        val nameLower = file.name.lowercase(Locale.ROOT)
+        var score = 0
+        if (nameLower.startsWith(baseName.lowercase(Locale.ROOT))) score += 10
+        if (nameLower.contains("双语") || nameLower.contains("bilingual") || nameLower.contains("merged") ||
+            nameLower.contains("chn.eng") || nameLower.contains("chs&eng") || nameLower.contains("chs.eng")) {
+          score += 20
+        }
+        score
+      }) ?: emptyList()
 
     if (subtitles.isNotEmpty()) {
       // Run subtitle file splitting and track loading strictly on Dispatchers.IO to prevent UI thread freezes
@@ -222,7 +231,7 @@ object SubtitleOps : KoinComponent {
           }.getOrNull()
 
           if (splitResult != null) {
-            MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", "[中] ${subtitle.name}")
+            MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", splitResult.primaryTitle)
             MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", splitResult.secondaryTitle)
             MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
             // Also keep original untouched subtitle as fallback
@@ -338,6 +347,50 @@ object SubtitleOps : KoinComponent {
         Log.d(TAG, "Could not load network subtitle $subtitleUrl: ${e.message}")
       }
     }
+  }
+
+  private val BRACKET_TAGS_REGEX = Regex("""\[.*?\]|【.*?】|\(.*?\)|（.*?）""")
+  private val SPLIT_DELIMITERS_REGEX = Regex("[\\s._\\-+]+")
+  private val MEDIA_NOISE_TOKENS = setOf(
+    "1080p", "720p", "2160p", "4k", "x264", "x265", "h264", "h265", "hevc", "repack",
+    "webdl", "web-dl", "web", "dl", "amzn", "nf", "ddp5", "atmos", "ac3", "aac", "merged",
+    "chn", "eng", "chs", "cht", "chs&eng", "sub", "ass", "ssa", "srt", "vtt", "mkv", "mp4",
+    "dts", "bluray", "bdrip", "hdrip", "remux"
+  )
+
+  fun isMatchingSubtitle(videoBaseName: String, subBaseName: String): Boolean {
+    val vLower = videoBaseName.lowercase(Locale.ROOT)
+    val sLower = subBaseName.lowercase(Locale.ROOT)
+
+    // 1. Direct prefix / suffix / containment check
+    if (sLower.startsWith(vLower) || vLower.startsWith(sLower)) return true
+    if (sLower.contains(vLower) || vLower.contains(sLower)) return true
+
+    // 2. Cleaned bracket tags check (e.g. 【简英双语】, [SubHD])
+    val vClean = BRACKET_TAGS_REGEX.replace(vLower, " ").trim()
+    val sClean = BRACKET_TAGS_REGEX.replace(sLower, " ").trim()
+    if (vClean.isNotEmpty() && sClean.isNotEmpty()) {
+      if (sClean.contains(vClean) || vClean.contains(sClean)) return true
+    }
+
+    // 3. Token-based overlap matching (resilient to reordered or different tags)
+    val vTokens = extractCoreTokens(vLower)
+    val sTokens = extractCoreTokens(sLower)
+    if (vTokens.isEmpty() || sTokens.isEmpty()) return false
+
+    val vSet = vTokens.toSet()
+    val sSet = sTokens.toSet()
+    val common = vSet.intersect(sSet)
+    val minLen = minOf(vSet.size, sSet.size)
+
+    return (common.size >= 2 && (common.size.toFloat() / minLen.toFloat()) >= 0.6f)
+  }
+
+  private fun extractCoreTokens(name: String): List<String> {
+    val clean = BRACKET_TAGS_REGEX.replace(name, " ")
+    return SPLIT_DELIMITERS_REGEX.split(clean)
+      .map { it.trim().lowercase(Locale.ROOT) }
+      .filter { it.isNotEmpty() && it.length > 1 && it !in MEDIA_NOISE_TOKENS && !it.all { c -> c.isDigit() } }
   }
 
   private fun isSubtitleFile(fileName: String): Boolean {

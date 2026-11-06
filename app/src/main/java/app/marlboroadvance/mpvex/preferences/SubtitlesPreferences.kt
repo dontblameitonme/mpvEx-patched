@@ -46,12 +46,12 @@ class SubtitlesPreferences(
   val backgroundColor = preferenceStore.getInt("sub_color_bg", Color.Transparent.toArgb())
 
   val justification = preferenceStore.getEnum("sub_justify", SubtitleJustification.Auto)
-  val subPos = preferenceStore.getFloat("sub_pos", 92.0f)
+  val subPos = preferenceStore.getFloat("sub_pos", 90.0f)
   val subSpacing = preferenceStore.getInt("sub_spacing", 0)
 
   // Secondary Subtitle preferences
   val secondaryFont = preferenceStore.getString("secondary_sub_font", "")
-  val secondaryFontSize = preferenceStore.getInt("secondary_sub_font_size", 55)
+  val secondaryFontSize = preferenceStore.getInt("secondary_sub_font_size", 45)
   val secondarySubScale = preferenceStore.getFloat("secondary_sub_scale", 1f)
   val secondaryBorderSize = preferenceStore.getFloat("secondary_sub_border_size", 3.0f)
   val secondaryBold = preferenceStore.getBoolean("secondary_sub_bold", false)
@@ -65,12 +65,12 @@ class SubtitlesPreferences(
 
   val secondaryJustification = preferenceStore.getEnum("secondary_sub_justify", SubtitleJustification.Auto)
   val secondarySubPos = preferenceStore.getFloat("secondary_sub_pos", 100.0f)
-  val secondarySubSpacing = preferenceStore.getFloat("secondary_sub_spacing", -8.0f)
+  val secondarySubSpacing = preferenceStore.getFloat("secondary_sub_spacing", -10.0f)
 
   val overrideAssSubs =
     preferenceStore.getObject(
       key = "sub_override_ass",
-      defaultValue = SubAssOverride.None,
+      defaultValue = SubAssOverride.Scale,
       serializer = { it.value },
       deserializer = { SubAssOverride.fromValue(it) },
     )
