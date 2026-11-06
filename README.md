@@ -1,9 +1,6 @@
 ![banner](fastlane/metadata/android/en-US/images/featureGraphic.png)
 
 # mpvExtended (Patched Edition)
-[![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/marlboro-advance/mpvex.svg?logo=github&label=GitHub&cacheSeconds=3600)](https://github.com/marlboro-advance/mpvex/releases/latest)
-[![GitHub all releases](https://img.shields.io/github/downloads/marlboro-advance/mpvex/total?logo=github&cacheSeconds=3600)](https://github.com/marlboro-advance/mpvex/releases/latest)
-[![Privacy Policy](https://img.shields.io/badge/Privacy%20Policy-View-brightgreen?logo=shield)](https://marlboro-advance.github.io/mpvEx/privacy-policy.html)
 
 > This repository is a custom patched edition of [mpvExtended](https://github.com/marlboro-advance/mpvEx), featuring extensive refactoring and enhancements for **smart bilingual subtitle separation with independent rendering control**, **dynamic height-based volume gesture sensitivity**, **synchronized bilingual subtitle delay & speed**, and **deep performance optimizations eliminating cold-start and UI jank**.
 
