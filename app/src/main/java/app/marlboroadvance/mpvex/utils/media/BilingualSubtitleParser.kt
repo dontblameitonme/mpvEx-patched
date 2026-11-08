@@ -36,7 +36,7 @@ data class BilingualSplitResult(
  */
 object BilingualSubtitleParser {
   private const val TAG = "BilingualSubParser"
-  private const val CACHE_DIR_NAME = "bilingual_subs_v5"
+  private const val CACHE_DIR_NAME = "bilingual_subs_v6"
 
   private val CJK_REGEX = Regex("[\\u4e00-\\u9fff\\u3400-\\u4dbf]")
   private val LATIN_REGEX = Regex("[a-zA-Z]")
@@ -504,17 +504,13 @@ object BilingualSubtitleParser {
       val priCleanList = cue.priParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
       val secCleanList = cue.secParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
 
-      val priText = priCleanList.joinToString("\\N")
-      val cleanedSec = secCleanList.joinToString("\\N")
+      // Merge intra-language multiple lines into a single line per language
+      val priText = priCleanList.joinToString(" ")
+      val cleanedSec = secCleanList.joinToString(" ")
 
       // 1. Primary ASS dialogue (pure Chinese)
-      // When secondary subtitle has multiple lines (secCleanList.size > 1),
-      // dynamically elevate primary subtitle MarginV so it stays cleanly above secondary subtitle.
       if (priText.isNotEmpty()) {
-        val secLineCount = secCleanList.size
-        // 56 ASS pixels per extra line of secondary subtitle ensures zero multi-line overlap
-        val dynamicMarginV = if (secLineCount > 1) (secLineCount - 1) * 56 else 0
-        priWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,$dynamicMarginV,,$priText")
+        priWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priText")
         priWriter.newLine()
       }
 
@@ -739,6 +735,9 @@ fun Int.toAssColorString(): String {
  * mpv's native `sub-ass-style-overrides` option.
  */
 fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
+  val curSecSid = MPVLib.getPropertyInt("secondary-sid") ?: 0
+  val isSecondaryActive = curSecSid > 0
+
   val isBold = preferences.secondaryBold.get()
   val isItalic = preferences.secondaryItalic.get()
   val font = preferences.secondaryFont.get()
@@ -773,20 +772,14 @@ fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
   preferences.secondarySubPos.set(secPos)
 
   // In mpv, secondary-sub-pos is an integer percentage (0-150) of screen height.
-  // To provide truly continuous 0.1-level precision on screen, we split secPos into:
-  // 1) Integer baseline: secPosInt = secPos.roundToInt()
-  // 2) Fractional difference: diff = secPos - secPosInt (-0.5 to +0.5)
-  // In 1080p ASS, 1% of screen height is ~10.8 pixels.
-  // For bottom-aligned ASS subtitles (Alignment 2), higher MarginV moves text UP,
-  // while higher sub-pos moves text DOWN.
-  // Therefore, if diff > 0 (secPos > secPosInt, text should move lower), MarginV decreases.
+  // To provide continuous precision on screen, we split secPos into baseline and fractional offset.
   val secPosInt = secPos.roundToInt()
   val diff = secPos - secPosInt.toFloat()
   val pixelOffset = -(diff * 10.8f).roundToInt()
   val baseMarginV = 20
   val effectiveMarginV = (baseMarginV + pixelOffset).coerceAtLeast(0)
 
-  val overrides = listOf(
+  val overrideList = mutableListOf(
     "Secondary.Fontname=$assFont",
     "Secondary.Fontsize=$effectiveFontSize",
     "Secondary.PrimaryColour=${textColor.toAssColorString()}",
@@ -799,9 +792,30 @@ fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
     "Secondary.BorderStyle=$assBorderStyle",
     "Secondary.Alignment=$alignment",
     "Secondary.MarginV=$effectiveMarginV",
-  ).joinToString(",")
+  )
 
-  MPVLib.setPropertyString("sub-ass-style-overrides", overrides)
+  if (isSecondaryActive) {
+    // When dual subtitles are active, embedded tracks use style 'Default'.
+    // Override Default style so embedded secondary track receives secondary styling.
+    // Primary track is protected by sub-ass-override=force which enforces primary sub-* options.
+    overrideList.add("Default.Fontname=$assFont")
+    overrideList.add("Default.Fontsize=$effectiveFontSize")
+    overrideList.add("Default.PrimaryColour=${textColor.toAssColorString()}")
+    overrideList.add("Default.OutlineColour=${borderColor.toAssColorString()}")
+    overrideList.add("Default.BackColour=${bgColor.toAssColorString()}")
+    overrideList.add("Default.Bold=${if (isBold) 1 else 0}")
+    overrideList.add("Default.Italic=${if (isItalic) 1 else 0}")
+    overrideList.add("Default.Outline=$borderSize")
+    overrideList.add("Default.Shadow=$shadowOffset")
+    overrideList.add("Default.BorderStyle=$assBorderStyle")
+    overrideList.add("Default.Alignment=$alignment")
+
+    MPVLib.setPropertyString("sub-ass-override", "force")
+  } else {
+    MPVLib.setPropertyString("sub-ass-override", preferences.overrideAssSubs.get().value)
+  }
+
+  MPVLib.setPropertyString("sub-ass-style-overrides", overrideList.joinToString(","))
   MPVLib.setPropertyString("secondary-sub-ass-override", "scale")
   MPVLib.setPropertyInt("secondary-sub-pos", secPosInt)
   val scaleByWindow = preferences.scaleByWindow.get()
@@ -815,10 +829,12 @@ fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
   val effectiveScaleRatio = (fontSize.toFloat() / priFontSize.toFloat()) * subScale
   MPVLib.setPropertyFloat("secondary-sub-scale", effectiveScaleRatio)
 
-  // Safely forward secondary-sub-* properties supported by newer mpv builds
+  // Safely forward secondary-sub-* properties supported by newer mpv builds using valid HEX color string
+  val hexColor = String.format(Locale.US, "#%06X", 0xFFFFFF and textColor)
+  val hexBorderColor = String.format(Locale.US, "#%06X", 0xFFFFFF and borderColor)
   runCatching { MPVLib.setPropertyString("secondary-sub-font", assFont) }
-  runCatching { MPVLib.setPropertyString("secondary-sub-color", textColor.toAssColorString()) }
-  runCatching { MPVLib.setPropertyString("secondary-sub-border-color", borderColor.toAssColorString()) }
+  runCatching { MPVLib.setPropertyString("secondary-sub-color", hexColor) }
+  runCatching { MPVLib.setPropertyString("secondary-sub-border-color", hexBorderColor) }
   runCatching { MPVLib.setPropertyFloat("secondary-sub-border-size", borderSize) }
   runCatching { MPVLib.setPropertyBoolean("secondary-sub-bold", isBold) }
   runCatching { MPVLib.setPropertyBoolean("secondary-sub-italic", isItalic) }

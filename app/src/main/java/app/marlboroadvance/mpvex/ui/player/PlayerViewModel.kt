@@ -91,6 +91,7 @@ class PlayerViewModel(
   private val audioPreferences: AudioPreferences by inject()
   private val subtitlesPreferences: SubtitlesPreferences by inject()
   private val advancedPreferences: AdvancedPreferences by inject()
+  private val decoderPreferences: app.marlboroadvance.mpvex.preferences.DecoderPreferences by inject()
   private val json: Json by inject()
   private val playbackStateDao: app.marlboroadvance.mpvex.database.dao.PlaybackStateDao by inject()
 
@@ -1049,6 +1050,22 @@ class PlayerViewModel(
       withContext(Dispatchers.Main) { host.requestAudioFocus() }
       MPVLib.setPropertyBoolean("pause", false)
     }
+  }
+
+  fun updateDecoder(newDecoder: Decoder) {
+    viewModelScope.launch(Dispatchers.IO) {
+      MPVLib.setPropertyString("hwdec", newDecoder.value)
+      runCatching { MPVLib.command("video-reload") }
+      val isHw = newDecoder != Decoder.SW
+      decoderPreferences.tryHWDecoding.set(isHw)
+    }
+  }
+
+  fun toggleDecoder() {
+    val currentMpv = MPVLib.getPropertyString("hwdec-current") ?: "no"
+    val isCurrentlyHw = currentMpv != "no" && currentMpv != "auto"
+    val targetDecoder = if (isCurrentlyHw) Decoder.SW else Decoder.HW
+    updateDecoder(targetDecoder)
   }
 
   // ==================== UI Control ====================

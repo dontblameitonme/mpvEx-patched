@@ -64,8 +64,8 @@ class SubtitlesPreferences(
   val secondaryBackgroundColor = preferenceStore.getInt("secondary_sub_color_bg", Color.Transparent.toArgb())
 
   val secondaryJustification = preferenceStore.getEnum("secondary_sub_justify", SubtitleJustification.Auto)
-  val secondarySubPos = preferenceStore.getFloat("secondary_sub_pos", 100.0f)
-  val secondarySubSpacing = preferenceStore.getFloat("secondary_sub_spacing", -10.0f)
+  val secondarySubPos = preferenceStore.getFloat("secondary_sub_pos", 96.0f)
+  val secondarySubSpacing = preferenceStore.getFloat("secondary_sub_spacing", -6.0f)
 
   val overrideAssSubs =
     preferenceStore.getObject(

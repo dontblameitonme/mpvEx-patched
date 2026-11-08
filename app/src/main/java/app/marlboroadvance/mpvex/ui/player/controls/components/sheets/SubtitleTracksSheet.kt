@@ -179,11 +179,19 @@ fun SubtitlesSheet(
             item.selectedTracks.isEmpty() -> null
             item.selectedTracks.size == 1 -> getTrackTitle(item.selectedTracks.first())
             else -> {
-              val titles = mutableListOf<String>()
-              for (track in item.selectedTracks) {
-                titles.add(getTrackTitle(track))
+              val pri = item.selectedTracks.firstOrNull { it.id == primarySid }
+              val sec = item.selectedTracks.firstOrNull { it.id == secondarySid }
+              if (pri != null && sec != null) {
+                val priTitle = getTrackTitle(pri)
+                val secTitle = getTrackTitle(sec)
+                "主: $priTitle, 次: $secTitle"
+              } else {
+                val titles = mutableListOf<String>()
+                for (track in item.selectedTracks) {
+                  titles.add(getTrackTitle(track))
+                }
+                titles.joinToString(", ")
               }
-              titles.joinToString(", ")
             }
           }
 

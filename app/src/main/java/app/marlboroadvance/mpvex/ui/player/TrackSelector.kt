@@ -362,23 +362,40 @@ class TrackSelector(
     if (currentSecSid > 0) return
 
     val priTrack = subTracks.firstOrNull { it.id == primaryTrackId } ?: return
+    val priTitleLower = priTrack.title.lowercase(java.util.Locale.ROOT)
     val isChinese = priTrack.lang in setOf("chi", "zho", "zh", "chs", "cht") ||
-                    priTrack.title.contains("中") || priTrack.title.contains("chs") || priTrack.title.contains("cht") ||
-                    priTrack.title.contains("chinese")
+                    priTitleLower.contains("中") || priTitleLower.contains("chs") || priTitleLower.contains("cht") ||
+                    priTitleLower.contains("chinese") || priTitleLower.contains("simplified") || priTitleLower.contains("traditional")
     val isEnglish = priTrack.lang in setOf("eng", "en") ||
-                    priTrack.title.contains("英") || priTrack.title.contains("eng") || priTrack.title.contains("english")
+                    priTitleLower.contains("英") || priTitleLower.contains("eng") || priTitleLower.contains("english")
 
     val candidate = if (isChinese) {
-      subTracks.firstOrNull { it.id != primaryTrackId && !it.forced && (it.lang in setOf("eng", "en") || it.title.contains("eng") || it.title.contains("英")) }
+      subTracks.firstOrNull { candidate ->
+        val cTitle = candidate.title.lowercase(java.util.Locale.ROOT)
+        candidate.id != primaryTrackId && !candidate.forced &&
+          (candidate.lang in setOf("eng", "en") || cTitle.contains("eng") || cTitle.contains("英") || cTitle.contains("english"))
+      }
     } else if (isEnglish) {
-      subTracks.firstOrNull { it.id != primaryTrackId && !it.forced && (it.lang in setOf("chi", "zho", "zh", "chs", "cht") || it.title.contains("chs") || it.title.contains("中")) }
+      subTracks.firstOrNull { candidate ->
+        val cTitle = candidate.title.lowercase(java.util.Locale.ROOT)
+        candidate.id != primaryTrackId && !candidate.forced &&
+          (candidate.lang in setOf("chi", "zho", "zh", "chs", "cht") || cTitle.contains("chs") || cTitle.contains("cht") ||
+           cTitle.contains("中") || cTitle.contains("chinese") || cTitle.contains("simplified") || cTitle.contains("traditional"))
+      }
     } else {
       null
     }
 
     if (candidate != null) {
-      Log.d(TAG, "Smart Sub: Auto-paired complementary secondary track in Multi mode (id=${candidate.id}) [Applied]")
-      MPVLib.setPropertyInt("secondary-sid", candidate.id)
+      if (isEnglish) {
+        // Primary is English, candidate is Chinese: swap so Chinese is Primary (sid) and English is Secondary (secondary-sid)
+        Log.d(TAG, "Smart Sub: Auto-paired and swapped roles - Chinese Primary (id=${candidate.id}), English Secondary (id=${priTrack.id})")
+        MPVLib.setPropertyInt("sid", candidate.id)
+        MPVLib.setPropertyInt("secondary-sid", priTrack.id)
+      } else {
+        Log.d(TAG, "Smart Sub: Auto-paired complementary secondary track in Multi mode (id=${candidate.id}) [Applied]")
+        MPVLib.setPropertyInt("secondary-sid", candidate.id)
+      }
       applySecondarySubStyleOverrides(subtitlesPreferences)
     }
   }

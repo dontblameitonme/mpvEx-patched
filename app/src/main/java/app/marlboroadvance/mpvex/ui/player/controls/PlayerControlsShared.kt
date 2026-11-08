@@ -297,10 +297,14 @@ fun RenderPlayerButton(
         modifier = Modifier
           .height(buttonSize)
           .clip(CircleShape)
-          .clickable(
+          .combinedClickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = ripple(bounded = true),
             onClick = {
+              clickEvent()
+              viewModel.toggleDecoder()
+            },
+            onLongClick = {
               clickEvent()
               onOpenSheet(Sheets.Decoders)
             },
