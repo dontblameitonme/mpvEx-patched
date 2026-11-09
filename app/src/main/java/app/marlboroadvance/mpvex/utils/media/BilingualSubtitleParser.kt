@@ -36,7 +36,7 @@ data class BilingualSplitResult(
  */
 object BilingualSubtitleParser {
   private const val TAG = "BilingualSubParser"
-  private const val CACHE_DIR_NAME = "bilingual_subs_v5"
+  private const val CACHE_DIR_NAME = "bilingual_subs_v7"
 
   private val CJK_REGEX = Regex("[\\u4e00-\\u9fff\\u3400-\\u4dbf]")
   private val LATIN_REGEX = Regex("[a-zA-Z]")
@@ -504,17 +504,13 @@ object BilingualSubtitleParser {
       val priCleanList = cue.priParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
       val secCleanList = cue.secParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
 
-      val priText = priCleanList.joinToString("\\N")
-      val cleanedSec = secCleanList.joinToString("\\N")
+      // Merge intra-language multiple lines into a single clean line per language
+      val priText = priCleanList.joinToString(" ")
+      val cleanedSec = secCleanList.joinToString(" ")
 
       // 1. Primary ASS dialogue (pure Chinese)
-      // When secondary subtitle has multiple lines (secCleanList.size > 1),
-      // dynamically elevate primary subtitle MarginV so it stays cleanly above secondary subtitle.
       if (priText.isNotEmpty()) {
-        val secLineCount = secCleanList.size
-        // 56 ASS pixels per extra line of secondary subtitle ensures zero multi-line overlap
-        val dynamicMarginV = if (secLineCount > 1) (secLineCount - 1) * 56 else 0
-        priWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,$dynamicMarginV,,$priText")
+        priWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priText")
         priWriter.newLine()
       }
 

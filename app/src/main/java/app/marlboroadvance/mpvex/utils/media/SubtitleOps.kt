@@ -313,6 +313,14 @@ object SubtitleOps : KoinComponent {
           }
         }
       }
+    } else if (videoFile != null && videoFile.extension.equals("mkv", ignoreCase = true)) {
+      // Pre-process MKV embedded subtitles into standard external subtitle files
+      withContext(Dispatchers.IO) {
+        val splitResult = MkvSubtitleExtractor.extractAndLoadIfBilingual(videoFile, context, selectBilingual = true)
+        if (splitResult != null) {
+          Log.d(TAG, "Successfully pre-processed and loaded MKV embedded subtitles: ${splitResult.bilingualTitle}")
+        }
+      }
     }
   }
 
