@@ -9,4 +9,13 @@
   <string name="player_sheets_sub_embedded">自带字幕</string>
   <string name="player_sheets_sub_external">外挂字幕</string>
   <string name="player_sheets_sub_selected_prefix">已选: %s</string>
+  <string name="player_sheets_sub_settings_mode_single">单语言设置</string>
+  <string name="player_sheets_sub_settings_mode_multi">双语言设置</string>
+  <string name="player_sheets_sub_primary_typography_title">主字幕字体与排版</string>
+  <string name="player_sheets_sub_primary_colors_title">主字幕颜色</string>
+  <string name="player_sheets_sub_position_single">单字幕位置</string>
+  <string name="player_sheets_sub_position_bilingual_block">双语整体位置</string>
+  <string name="player_sheets_sub_bilingual_gap_label">双语上下间距</string>
+  <string name="player_sheets_secondary_sub_inactive_hint">提示：请在字幕列表中开启“双语流”或选择两个字幕轨道</string>
+  <string name="player_sheets_secondary_sub_active_hint">已启用双语流：第二语言换行时主字幕会自动上抬避免遮挡，以下选项独立控制第二语言样式。</string>
 </resources>

@@ -42,13 +42,13 @@ import app.marlboroadvance.mpvex.preferences.AdvancedPreferences
 import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.BrowserPreferences
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.ui.player.controls.PlayerControls
 import app.marlboroadvance.mpvex.ui.theme.MpvexTheme
 import app.marlboroadvance.mpvex.utils.history.RecentlyPlayedOps
 import app.marlboroadvance.mpvex.utils.media.HttpUtils
 import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
-import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import app.marlboroadvance.mpvex.utils.media.SubtitleOps
 import app.marlboroadvance.mpvex.utils.media.PlaybackStateOps
 import app.marlboroadvance.mpvex.utils.storage.FileTypeUtils
@@ -1141,74 +1141,21 @@ class PlayerActivity :
         Log.v(TAG, "Adding subtitles from intent extras: $subfile")
         val file = if (subfile.startsWith("/")) File(subfile) else null
         val splitResult = file?.let {
-          runCatching { BilingualSubtitleParser.splitIfBilingual(it, this@PlayerActivity) }.getOrNull()
+          runCatching {
+            BilingualSubtitleParser.splitIfBilingual(it, this@PlayerActivity, subtitlesPreferences)
+          }.getOrNull()
         } ?: runCatching {
-          BilingualSubtitleParser.splitIfBilingual(suburi, this@PlayerActivity)
+          BilingualSubtitleParser.splitIfBilingual(suburi, this@PlayerActivity, null, subtitlesPreferences)
         }.getOrNull()
 
         if (splitResult != null) {
-          MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", "[中] ${splitResult.primaryTitle}")
-          MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", "[英] ${splitResult.secondaryTitle}")
-          MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
-          MPVLib.command("sub-add", subfile, "auto", "[原版] ${file?.name ?: suburi.lastPathSegment}")
-
-          if (flag == "select") {
-            val mode = subtitlesPreferences.subtitleMode.get()
-            var biId: Int? = null
-            var priId: Int? = null
-            var secId: Int? = null
-            for (attempt in 0 until 30) {
-              delay(50)
-              val count = MPVLib.getPropertyInt("track-list/count") ?: 0
-              for (i in 0 until count) {
-                val type = MPVLib.getPropertyString("track-list/$i/type")
-                if (type != "sub") continue
-                val extPath = MPVLib.getPropertyString("track-list/$i/external-filename") ?: ""
-                val title = MPVLib.getPropertyString("track-list/$i/title") ?: ""
-                val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
-
-                if (id > 0) {
-                  if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
-                    priId = id
-                  }
-                  if (extPath == splitResult.secondaryFile.absolutePath || title.startsWith("[英]")) {
-                    secId = id
-                  }
-                  if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
-                    biId = id
-                  }
-                }
-              }
-              if (priId != null && secId != null) break
-            }
-
-            if (mode == app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) {
-              if (priId != null && secId != null) {
-                MPVLib.setPropertyInt("sid", priId)
-                MPVLib.setPropertyInt("secondary-sid", secId)
-                val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
-                val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
-                MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
-                MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
-                applySecondarySubStyleOverrides(subtitlesPreferences)
-              } else if (biId != null) {
-                MPVLib.setPropertyInt("sid", biId)
-                MPVLib.setPropertyString("secondary-sid", "no")
-                applySecondarySubStyleOverrides(subtitlesPreferences)
-              } else if (priId != null) {
-                MPVLib.setPropertyInt("sid", priId)
-                MPVLib.setPropertyString("secondary-sid", "no")
-              }
-            } else {
-              if (priId != null) {
-                MPVLib.setPropertyInt("sid", priId)
-                MPVLib.setPropertyString("secondary-sid", "no")
-              } else if (biId != null) {
-                MPVLib.setPropertyInt("sid", biId)
-                MPVLib.setPropertyString("secondary-sid", "no")
-              }
-            }
-          }
+          SubtitleOps.addAndActivatePreprocessedResult(
+            splitResult = splitResult,
+            subtitlesPreferences = subtitlesPreferences,
+            autoSelect = (flag == "select"),
+            fallbackPlainFile = file,
+            fallbackTitle = "[原版] ${file?.name ?: suburi.lastPathSegment}",
+          )
         } else {
           MPVLib.command("sub-add", subfile, flag)
         }
@@ -1796,41 +1743,58 @@ class PlayerActivity :
     lifecycleScope.launch(Dispatchers.IO) {
       // Load playback state (will skip track restoration if preferred language configured)
       val hasState = loadVideoPlaybackState(fileName)
+      val savedState = if (hasState) playbackStateRepository.getVideoDataByTitle(mediaIdentifier) else null
+      val upgradeKey = mediaIdentifier.ifBlank { fileName }
+      val alreadyV8 = upgradeKey in subtitlesPreferences.upgradedV8Videos.get()
+      val isExplicitOff =
+        savedState != null &&
+          savedState.sid <= 0 &&
+          savedState.selectedSubTitle.isNullOrBlank() &&
+          savedState.selectedSecondarySubTitle.isNullOrBlank()
+      val isExplicitPreprocessedOrRawChoice =
+        savedState?.selectedSubTitle?.let { t ->
+          t.startsWith("[中]") || t.startsWith("[英]") || t.startsWith("[双语]") ||
+            t.startsWith("[标准]") || t.startsWith("[原版]")
+        } == true
+      val respectSavedSubChoice = isExplicitOff || isExplicitPreprocessedOrRawChoice || alreadyV8
 
       // If autoloading subtitles is enabled, discover/split/add them first so tracks exist in mpv
+      var upgradedPreprocessedActive = false
       if (subtitlesPreferences.autoloadMatchingSubtitles.get()) {
         val networkFilePath = intent.getStringExtra("network_file_path")
         val networkConnectionId = intent.getLongExtra("network_connection_id", -1L)
 
         if (networkFilePath != null && networkConnectionId != -1L) {
-          SubtitleOps.autoloadSubtitles(
+          upgradedPreprocessedActive = SubtitleOps.autoloadSubtitles(
             videoFilePath = networkFilePath,
             videoFileName = fileName,
             networkConnectionId = networkConnectionId,
+            autoSelect = !respectSavedSubChoice,
           )
         } else {
           val filePath = parsePathFromIntent(intent)
           if (filePath != null) {
-            SubtitleOps.autoloadSubtitles(
+            upgradedPreprocessedActive = SubtitleOps.autoloadSubtitles(
               videoFilePath = filePath,
               videoFileName = fileName,
+              autoSelect = !respectSavedSubChoice,
             )
           }
         }
+        if (upgradedPreprocessedActive && !alreadyV8) {
+          subtitlesPreferences.upgradedV8Videos.set(subtitlesPreferences.upgradedV8Videos.get() + upgradeKey)
+        }
       }
 
-      // Reconcile saved subtitle tracks reactively (matches by title as soon as external/split tracks arrive)
-      if (hasState) {
-        val state = playbackStateRepository.getVideoDataByTitle(mediaIdentifier)
-        if (state != null) {
-          withContext(Dispatchers.Main) {
-            startSubtitleReconciliation(state)
-          }
+      // Reconcile saved subtitle tracks reactively unless upgraded once from legacy raw embedded track
+      if (savedState != null && !(upgradedPreprocessedActive && !respectSavedSubChoice)) {
+        withContext(Dispatchers.Main) {
+          startSubtitleReconciliation(savedState)
         }
       }
 
       // Apply track selection logic (defaults only apply when no saved state)
-      trackSelector.onFileLoaded(hasState)
+      trackSelector.onFileLoaded(hasState || upgradedPreprocessedActive)
 
       // Apply default zoom only if there's no saved state
       if (!hasState) {
@@ -2057,51 +2021,9 @@ class PlayerActivity :
    * This ensures subtitle customizations (font, colors, position, etc.) persist across videos.
    */
   private fun applySubtitlePreferences() {
-    // Primary Typography settings
-    MPVLib.setPropertyString("sub-font", subtitlesPreferences.font.get())
-    MPVLib.setPropertyInt("sub-font-size", subtitlesPreferences.fontSize.get())
-    MPVLib.setPropertyBoolean("sub-bold", subtitlesPreferences.bold.get())
-    MPVLib.setPropertyBoolean("sub-italic", subtitlesPreferences.italic.get())
-    MPVLib.setPropertyString("sub-justify", subtitlesPreferences.justification.get().value)
-    MPVLib.setPropertyString("sub-border-style", subtitlesPreferences.borderStyle.get().value)
-    MPVLib.setPropertyFloat("sub-outline-size", subtitlesPreferences.borderSize.get())
-    MPVLib.setPropertyFloat("sub-border-size", subtitlesPreferences.borderSize.get())
-    MPVLib.setPropertyInt("sub-shadow-offset", subtitlesPreferences.shadowOffset.get())
-    MPVLib.setPropertyFloat("sub-scale", subtitlesPreferences.subScale.get())
-    MPVLib.setPropertyInt("sub-pos", subtitlesPreferences.subPos.get().roundToInt())
-    MPVLib.setPropertyInt("sub-line-spacing", subtitlesPreferences.subSpacing.get())
-    MPVLib.setPropertyInt("sub-ass-line-spacing", subtitlesPreferences.subSpacing.get())
-
-    // Primary Color settings
-    MPVLib.setPropertyString("sub-color", subtitlesPreferences.textColor.get().toColorHexString())
-    MPVLib.setPropertyString("sub-border-color", subtitlesPreferences.borderColor.get().toColorHexString())
-    MPVLib.setPropertyString("sub-back-color", subtitlesPreferences.backgroundColor.get().toColorHexString())
-
-    // Secondary Subtitle settings (using dedicated Secondary ASS style overrides)
-    applySecondarySubStyleOverrides(subtitlesPreferences)
-
-    // Miscellaneous settings
-    val assOverrideMode = subtitlesPreferences.overrideAssSubs.get().value
-    MPVLib.setPropertyString("sub-ass-override", assOverrideMode)
-    if (assOverrideMode == "force" || assOverrideMode == "strip") {
-      MPVLib.setPropertyBoolean("sub-ass-justify", true)
-    }
-
-    val scaleByWindow = subtitlesPreferences.scaleByWindow.get()
-    val scaleValue = if (scaleByWindow) "yes" else "no"
-    MPVLib.setPropertyString("sub-scale-by-window", scaleValue)
-    MPVLib.setPropertyString("sub-use-margins", scaleValue)
-    MPVLib.setPropertyString("sub-ass-scale-with-window", scaleValue)
-    MPVLib.setPropertyString("sub-ass-force-margins", scaleValue)
-
+    BilingualSubtitleParser.applySubtitlePreferencesForMode(subtitlesPreferences)
     Log.d(TAG, "Applied subtitle preferences")
   }
-
-  /**
-   * Helper extension function to convert Int color to hex string for MPV
-   */
-  @OptIn(ExperimentalStdlibApi::class)
-  private fun Int.toColorHexString() = "#" + this.toHexString().uppercase()
 
   /**
    * Saves the current playback state to the database.
@@ -2302,12 +2224,13 @@ class PlayerActivity :
     // Restore video zoom from saved state
     viewModel.setVideoZoom(state.videoZoom)
 
-    // Restore subtitle mode if saved
+    // Restore subtitle mode if saved and immediately apply mode-isolated subtitle styling
     if (!state.selectedSubMode.isNullOrBlank()) {
       runCatching {
-        app.marlboroadvance.mpvex.preferences.SubtitleMode.valueOf(state.selectedSubMode)
+        SubtitleMode.valueOf(state.selectedSubMode)
       }.getOrNull()?.let { mode ->
         subtitlesPreferences.subtitleMode.set(mode)
+        applySubtitlePreferences()
       }
     }
 
@@ -2370,7 +2293,7 @@ class PlayerActivity :
               player.secondarySid = matchedSec.id
               secMatched = true
               viewModel.syncSecondarySubtitleDelayAndSpeed()
-              applySecondarySubStyleOverrides(subtitlesPreferences)
+              applySubtitlePreferences()
               Log.d(TAG, "Reactive reconcile: Secondary sub matched '$targetSecTitle' -> id ${matchedSec.id}")
             }
           }

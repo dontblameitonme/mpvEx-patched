@@ -3,7 +3,8 @@ package app.marlboroadvance.mpvex.ui.player
 import android.util.Log
 import app.marlboroadvance.mpvex.preferences.AudioPreferences
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
-import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
+import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
 import `is`.xyz.mpv.MPVLib
 import kotlinx.coroutines.delay
 
@@ -247,19 +248,43 @@ class TrackSelector(
       val ignoreSubs = listOf("signs", "songs", "lyrics", "forced", "sdh", "colored", "karaoke")
       val subTracks = tracks.filter { it.type == "sub" }
 
-      // PASS 00: EXTERNAL TRACK OVERRIDE (Protects manually loaded subtitle files)
-      val priBilingualTrack = subTracks.firstOrNull { it.external && it.title.startsWith("[中]") }
+      // PASS 00: EXTERNAL PRE-PROCESSED OVERRIDE (Respects Single vs Multi mode)
+      val mode = subtitlesPreferences.subtitleMode.get()
+      val biTrack = subTracks.firstOrNull { it.external && it.title.startsWith("[双语]") }
+      val priBilingualTrack =
+        subTracks.firstOrNull { it.external && (it.title.startsWith("[中]") || it.title.startsWith("[标准]")) }
       val secBilingualTrack = subTracks.firstOrNull { it.external && it.title.startsWith("[英]") }
-      if (priBilingualTrack != null) {
-        if (currentSid != priBilingualTrack.id) {
-          Log.d(TAG, "Smart Sub: Bilingual Primary [中] (id=${priBilingualTrack.id}) [Applied]")
-          MPVLib.setPropertyInt("sid", priBilingualTrack.id)
+
+      if (biTrack != null || priBilingualTrack != null || secBilingualTrack != null) {
+        if (mode == SubtitleMode.Multi) {
+          when {
+            biTrack != null -> {
+              if (currentSid != biTrack.id) MPVLib.setPropertyInt("sid", biTrack.id)
+              MPVLib.setPropertyString("secondary-sid", "no")
+              Log.d(TAG, "Smart Sub: Bilingual [双语] (id=${biTrack.id}) [Applied]")
+            }
+            priBilingualTrack != null && secBilingualTrack != null -> {
+              if (currentSid != priBilingualTrack.id) MPVLib.setPropertyInt("sid", priBilingualTrack.id)
+              MPVLib.setPropertyInt("secondary-sid", secBilingualTrack.id)
+              Log.d(TAG, "Smart Sub: Bilingual Primary [中]+Secondary [英] [Applied]")
+            }
+            else -> {
+              val singleFallback = priBilingualTrack ?: secBilingualTrack
+              if (singleFallback != null) {
+                if (currentSid != singleFallback.id) MPVLib.setPropertyInt("sid", singleFallback.id)
+                MPVLib.setPropertyString("secondary-sid", "no")
+              }
+            }
+          }
+        } else {
+          val targetSingle = priBilingualTrack ?: secBilingualTrack ?: biTrack
+          if (targetSingle != null) {
+            if (currentSid != targetSingle.id) MPVLib.setPropertyInt("sid", targetSingle.id)
+            MPVLib.setPropertyString("secondary-sid", "no")
+            Log.d(TAG, "Smart Sub: Single Preprocessed (id=${targetSingle.id}, ${targetSingle.title}) [Applied]")
+          }
         }
-        if (secBilingualTrack != null) {
-          Log.d(TAG, "Smart Sub: Bilingual Secondary [英] (id=${secBilingualTrack.id}) [Applied]")
-          MPVLib.setPropertyInt("secondary-sid", secBilingualTrack.id)
-          applySecondarySubStyleOverrides(subtitlesPreferences)
-        }
+        BilingualSubtitleParser.applySubtitlePreferencesForMode(subtitlesPreferences, mode)
         return
       }
 
@@ -379,7 +404,7 @@ class TrackSelector(
     if (candidate != null) {
       Log.d(TAG, "Smart Sub: Auto-paired complementary secondary track in Multi mode (id=${candidate.id}) [Applied]")
       MPVLib.setPropertyInt("secondary-sid", candidate.id)
-      applySecondarySubStyleOverrides(subtitlesPreferences)
+      BilingualSubtitleParser.applySubtitlePreferencesForMode(subtitlesPreferences, SubtitleMode.Multi)
     }
   }
 }

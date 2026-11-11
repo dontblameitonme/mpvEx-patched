@@ -43,10 +43,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import app.marlboroadvance.mpvex.R
+import androidx.compose.runtime.remember
 import app.marlboroadvance.mpvex.preferences.SubtitleJustification
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
-import app.marlboroadvance.mpvex.preferences.preference.deleteAndGet
+import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
 import app.marlboroadvance.mpvex.presentation.components.ExpandableCard
 import app.marlboroadvance.mpvex.presentation.components.ExposedTextDropDownMenu
 import app.marlboroadvance.mpvex.presentation.components.SliderItem
@@ -56,7 +58,6 @@ import app.marlboroadvance.mpvex.ui.player.controls.panelCardsColors
 import app.marlboroadvance.mpvex.ui.theme.spacing
 import com.github.k1rakishou.fsaf.FileManager
 import com.yubyf.truetypeparser.TTFFile
-import `is`.xyz.mpv.MPVLib
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -68,9 +69,13 @@ import org.koin.compose.koinInject
 
 @SuppressLint("MutableCollectionMutableState")
 @Composable
-fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
+fun SubtitleSettingsTypographyCard(
+  modifier: Modifier = Modifier,
+  mode: SubtitleMode = SubtitleMode.Single,
+) {
   val context = LocalContext.current
   val preferences = koinInject<SubtitlesPreferences>()
+  val profile = remember(mode) { preferences.primaryProfileFor(mode) }
   val fileManager = koinInject<FileManager>()
   var isExpanded by remember { mutableStateOf(true) }
   val fonts by remember { mutableStateOf(mutableListOf<String>("Default")) }
@@ -107,21 +112,29 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
       ) {
         Icon(Icons.Default.FormatColorText, null)
-        Text(stringResource(R.string.player_sheets_sub_typography_card_title))
+        Text(
+          stringResource(
+            if (mode == SubtitleMode.Multi) {
+              R.string.player_sheets_sub_primary_typography_title
+            } else {
+              R.string.player_sheets_sub_typography_card_title
+            },
+          ),
+        )
       }
     },
     modifier = modifier.widthIn(max = CARDS_MAX_WIDTH),
     colors = panelCardsColors(),
   ) {
     Column {
-      val isBold by preferences.bold.collectAsState()
-      val isItalic by preferences.italic.collectAsState()
-      val justify by preferences.justification.collectAsState()
-      val font by preferences.font.collectAsState()
-      val fontSize by preferences.fontSize.collectAsState()
-      val borderStyle by preferences.borderStyle.collectAsState()
-      val borderSize by preferences.borderSize.collectAsState()
-      val shadowOffset by preferences.shadowOffset.collectAsState()
+      val isBold by profile.bold.collectAsState()
+      val isItalic by profile.italic.collectAsState()
+      val justify by profile.justification.collectAsState()
+      val font by profile.font.collectAsState()
+      val fontSize by profile.fontSize.collectAsState()
+      val borderStyle by profile.borderStyle.collectAsState()
+      val borderSize by profile.borderSize.collectAsState()
+      val shadowOffset by profile.shadowOffset.collectAsState()
       Row(
         Modifier
           .fillMaxWidth()
@@ -132,8 +145,8 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         IconToggleButton(
           checked = isBold == true,
           onCheckedChange = {
-            preferences.bold.set(it)
-            MPVLib.setPropertyBoolean("sub-bold", it)
+            profile.bold.set(it)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
           },
         ) {
           Icon(
@@ -145,8 +158,8 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         IconToggleButton(
           checked = isItalic == true,
           onCheckedChange = {
-            preferences.italic.set(it)
-            MPVLib.setPropertyBoolean("sub-italic", it)
+            profile.italic.set(it)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
           },
         ) {
           Icon(
@@ -159,14 +172,8 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
           IconToggleButton(
             checked = justify == justification,
             onCheckedChange = {
-              MPVLib.setPropertyBoolean("sub-ass-justify", it)
-              if (it) {
-                preferences.justification.set(justification)
-                MPVLib.setPropertyString("sub-justify", justification.value)
-              } else {
-                preferences.justification.set(SubtitleJustification.Auto)
-                MPVLib.setPropertyString("sub-justify", SubtitleJustification.Auto.value)
-              }
+              profile.justification.set(if (it) justification else SubtitleJustification.Auto)
+              BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
             },
           ) {
             Icon(justification.icon, null)
@@ -174,7 +181,7 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         }
         Spacer(Modifier.weight(1f))
         TextButton(
-          onClick = { resetTypography(preferences) },
+          onClick = { resetTypography(preferences, mode) },
         ) {
           Row(
             horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.extraSmall),
@@ -201,8 +208,8 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
           label = stringResource(R.string.player_sheets_sub_typography_font),
           onValueChangedEvent = {
             val actualFont = if (it == "Default") "" else it
-            preferences.font.set(actualFont)
-            MPVLib.setPropertyString("sub-font", actualFont)
+            profile.font.set(actualFont)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
           },
           leadingIcon = fontsLoadingIndicator,
         )
@@ -214,8 +221,8 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         value = fontSize,
         valueText = fontSize.toString(),
         onChange = {
-          preferences.fontSize.set(it)
-          MPVLib.setPropertyInt("sub-font-size", it)
+          profile.fontSize.set(it)
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
         },
       ) {
         Icon(Icons.Default.FormatSize, null)
@@ -226,8 +233,8 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         ListPreference(
           borderStyle,
           onValueChange = {
-            preferences.borderStyle.set(it)
-            MPVLib.setPropertyString("sub-border-style", it.value)
+            profile.borderStyle.set(it)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
           },
           title = { Text(stringResource(R.string.player_sheets_subtitles_border_style)) },
           valueToText = { AnnotatedString(context.getString(it.titleRes)) },
@@ -242,9 +249,8 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         value = borderSize,
         valueText = borderSize.toFixed(1).toString(),
         onChange = {
-          preferences.borderSize.set(it)
-          MPVLib.setPropertyFloat("sub-outline-size", it)
-          MPVLib.setPropertyFloat("sub-border-size", it)
+          profile.borderSize.set(it)
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
         },
         min = 0f,
         max = 4f,
@@ -256,8 +262,8 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
         value = shadowOffset,
         valueText = shadowOffset.toString(),
         onChange = {
-          preferences.shadowOffset.set(it)
-          MPVLib.setPropertyInt("sub-shadow-offset", it)
+          profile.shadowOffset.set(it)
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
         },
         max = 100,
         icon = { Icon(painterResource(R.drawable.sharp_shadow_24), null) },
@@ -266,21 +272,22 @@ fun SubtitleSettingsTypographyCard(modifier: Modifier = Modifier) {
   }
 }
 
-fun resetTypography(preferences: SubtitlesPreferences) {
-  MPVLib.setPropertyBoolean("sub-bold", preferences.bold.deleteAndGet())
-  MPVLib.setPropertyBoolean("sub-italic", preferences.italic.deleteAndGet())
-  MPVLib.setPropertyBoolean("sub-ass-justify", false)
-  MPVLib.setPropertyString("sub-justify", preferences.justification.deleteAndGet().value)
-  MPVLib.setPropertyString("sub-font", preferences.font.deleteAndGet())
-  MPVLib.setPropertyInt("sub-font-size", preferences.fontSize.deleteAndGet())
-  val defBorderSize = preferences.borderSize.deleteAndGet()
-  MPVLib.setPropertyFloat("sub-border-size", defBorderSize)
-  MPVLib.setPropertyFloat("sub-outline-size", defBorderSize)
-  MPVLib.setPropertyInt("sub-shadow-offset", preferences.shadowOffset.deleteAndGet())
-  MPVLib.setPropertyString("sub-border-style", preferences.borderStyle.deleteAndGet().value)
-  val defaultSpacing = preferences.subSpacing.deleteAndGet()
-  MPVLib.setPropertyInt("sub-line-spacing", defaultSpacing)
-  MPVLib.setPropertyInt("sub-ass-line-spacing", defaultSpacing)
+fun resetTypography(
+  preferences: SubtitlesPreferences,
+  mode: SubtitleMode = SubtitleMode.Single,
+) {
+  val profile = preferences.primaryProfileFor(mode)
+  val layout = preferences.layoutProfileFor(mode)
+  profile.bold.delete()
+  profile.italic.delete()
+  profile.justification.delete()
+  profile.font.delete()
+  profile.fontSize.delete()
+  profile.borderSize.delete()
+  profile.shadowOffset.delete()
+  profile.borderStyle.delete()
+  layout.subSpacing.delete()
+  BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
 }
 
 enum class SubtitlesBorderStyle(

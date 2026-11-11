@@ -1248,6 +1248,7 @@ fun PlayerControls(
     PlayerPanels(
       panelShown = panel,
       onDismissRequest = { onOpenPanel(Panels.None) },
+      onSubtitleModeChange = viewModel::setSubtitleMode,
     )
   }
 }

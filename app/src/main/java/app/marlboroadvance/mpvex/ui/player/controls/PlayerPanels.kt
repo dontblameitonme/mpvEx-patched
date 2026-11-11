@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.ui.player.Panels
 import app.marlboroadvance.mpvex.ui.player.controls.components.panels.AudioDelayPanel
 import app.marlboroadvance.mpvex.ui.player.controls.components.panels.SubtitleDelayPanel
@@ -26,6 +27,7 @@ fun PlayerPanels(
   panelShown: Panels,
   onDismissRequest: () -> Unit,
   modifier: Modifier = Modifier,
+  onSubtitleModeChange: (SubtitleMode) -> Unit = {},
 ) {
   AnimatedContent(
     targetState = panelShown,
@@ -42,7 +44,10 @@ fun PlayerPanels(
         Box(Modifier.fillMaxHeight())
       }
       Panels.SubtitleSettings -> {
-        SubtitleSettingsPanel(onDismissRequest)
+        SubtitleSettingsPanel(
+          onDismissRequest = onDismissRequest,
+          onSubtitleModeChange = onSubtitleModeChange,
+        )
       }
       Panels.SubtitleDelay -> {
         SubtitleDelayPanel(onDismissRequest)

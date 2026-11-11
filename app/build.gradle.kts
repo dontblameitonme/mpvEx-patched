@@ -127,6 +127,19 @@ android {
   androidResources {
     generateLocaleConfig = true
   }
+
+  testOptions {
+    unitTests {
+      isReturnDefaultValues = true
+      all {
+        it.testLogging {
+          events("passed", "skipped", "failed")
+          showStandardStreams = true
+          exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
+      }
+    }
+  }
 }
 
 androidComponents {
@@ -222,6 +235,8 @@ dependencies {
   implementation(libs.nanohttpd)
   implementation(libs.lazycolumnscrollbar)
   implementation(libs.reorderable)
+
+  testImplementation("junit:junit:4.13.2")
 }
 
 /* ---------------- Git helpers ---------------- */

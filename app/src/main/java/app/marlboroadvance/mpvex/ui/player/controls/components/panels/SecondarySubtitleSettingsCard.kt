@@ -47,27 +47,22 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.toColorInt
 import app.marlboroadvance.mpvex.R
 import app.marlboroadvance.mpvex.preferences.SubtitleJustification
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
-import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
-import app.marlboroadvance.mpvex.utils.media.toAssColorString
+import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
 import app.marlboroadvance.mpvex.preferences.preference.Preference
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
-import app.marlboroadvance.mpvex.preferences.preference.deleteAndGet
 import app.marlboroadvance.mpvex.presentation.components.ExpandableCard
 import app.marlboroadvance.mpvex.presentation.components.ExposedTextDropDownMenu
-import app.marlboroadvance.mpvex.presentation.components.FineTuneDialog
 import app.marlboroadvance.mpvex.presentation.components.SliderItem
 import app.marlboroadvance.mpvex.ui.player.controls.CARDS_MAX_WIDTH
 import app.marlboroadvance.mpvex.ui.player.controls.components.sheets.toFixed
 import app.marlboroadvance.mpvex.ui.player.controls.panelCardsColors
 import app.marlboroadvance.mpvex.ui.theme.spacing
-import java.util.Locale
 import com.github.k1rakishou.fsaf.FileManager
 import com.yubyf.truetypeparser.TTFFile
-import kotlin.math.roundToInt
 import `is`.xyz.mpv.MPVLib
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Dispatchers
@@ -153,8 +148,12 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
   ) {
     Column {
       val secondarySidStr by MPVLib.propString["secondary-sid"].collectAsState(initial = MPVLib.getPropertyString("secondary-sid"))
+      val currentSubTitle by MPVLib.propString["current-tracks/sub/title"].collectAsState(
+        initial = MPVLib.getPropertyString("current-tracks/sub/title"),
+      )
       val secondarySid = secondarySidStr?.toIntOrNull() ?: 0
-      if (secondarySid <= 0) {
+      val isBilingualFlowActive = currentSubTitle?.startsWith("[双语]") == true
+      if (secondarySid <= 0 && !isBilingualFlowActive) {
         Text(
           text = stringResource(R.string.player_sheets_secondary_sub_inactive_hint),
           style = MaterialTheme.typography.bodySmall,
@@ -179,10 +178,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
       val borderSize by preferences.secondaryBorderSize.collectAsState()
       val shadowOffset by preferences.secondaryShadowOffset.collectAsState()
       val subScale by preferences.secondarySubScale.collectAsState()
-      val secondarySpacing by preferences.secondarySubSpacing.collectAsState()
-      val secondarySubPos by preferences.secondarySubPos.collectAsState()
-      var showSpacingFineTune by remember { mutableStateOf(false) }
-      var showSecPosFineTune by remember { mutableStateOf(false) }
+      val bilingualGap by preferences.multiBilingualGap.collectAsState()
 
       // Bold, Italic, Alignment, Reset
       Row(
@@ -196,7 +192,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
           checked = isBold == true,
           onCheckedChange = {
             preferences.secondaryBold.set(it)
-            applySecondarySubStyleOverrides(preferences)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
           },
         ) {
           Icon(Icons.Default.FormatBold, null, modifier = Modifier.size(32.dp))
@@ -205,7 +201,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
           checked = isItalic == true,
           onCheckedChange = {
             preferences.secondaryItalic.set(it)
-            applySecondarySubStyleOverrides(preferences)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
           },
         ) {
           Icon(Icons.Default.FormatItalic, null, modifier = Modifier.size(32.dp))
@@ -219,7 +215,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
               } else {
                 preferences.secondaryJustification.set(SubtitleJustification.Auto)
               }
-              applySecondarySubStyleOverrides(preferences)
+              BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
             },
           ) {
             Icon(justification.icon, null)
@@ -257,7 +253,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
           onValueChangedEvent = {
             val actualFont = if (it == "Default") "" else it
             preferences.secondaryFont.set(actualFont)
-            applySecondarySubStyleOverrides(preferences)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
           },
           leadingIcon = fontsLoadingIndicator,
         )
@@ -272,7 +268,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
         valueText = fontSize.toString(),
         onChange = {
           preferences.secondaryFontSize.set(it)
-          applySecondarySubStyleOverrides(preferences)
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
         },
       ) {
         Icon(Icons.Default.FormatSize, null)
@@ -286,7 +282,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
           borderStyle,
           onValueChange = {
             preferences.secondaryBorderStyle.set(it)
-            applySecondarySubStyleOverrides(preferences)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
           },
           title = { Text(stringResource(R.string.player_sheets_subtitles_border_style)) },
           valueToText = { AnnotatedString(context.getString(it.titleRes)) },
@@ -304,7 +300,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
         valueText = borderSize.toFixed(1).toString(),
         onChange = {
           preferences.secondaryBorderSize.set(it)
-          applySecondarySubStyleOverrides(preferences)
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
         },
         min = 0f,
         max = 4f,
@@ -319,7 +315,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
         valueText = shadowOffset.toString(),
         onChange = {
           preferences.secondaryShadowOffset.set(it)
-          applySecondarySubStyleOverrides(preferences)
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
         },
         max = 100,
         icon = { Icon(painterResource(R.drawable.sharp_shadow_24), null) },
@@ -332,83 +328,25 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
         valueText = subScale.toFixed(2).toString(),
         onChange = {
           preferences.secondarySubScale.set(it)
-          applySecondarySubStyleOverrides(preferences)
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
         },
         max = 5f,
         icon = { Icon(Icons.Default.FormatSize, null) },
       )
 
-      // Line spacing slider between primary and secondary subtitles (-40.0 to +40.0, 0.1 fine tune)
+      // Gap between Primary and Secondary subtitles inside the unified [双语] stream (1 to 40 ASS pt)
       SliderItem(
-        label = stringResource(R.string.player_sheets_secondary_sub_spacing_label),
-        value = secondarySpacing,
-        valueText = String.format(Locale.US, "%.1f", secondarySpacing),
-        onChange = { rawSpacing ->
-          val newSpacing = (rawSpacing * 10f).roundToInt() / 10f
-          preferences.secondarySubSpacing.set(newSpacing)
-          applySecondarySubStyleOverrides(preferences)
+        label = stringResource(R.string.player_sheets_sub_bilingual_gap_label),
+        value = bilingualGap,
+        valueText = bilingualGap.toString(),
+        onChange = { newGap ->
+          preferences.multiBilingualGap.set(newGap.coerceIn(1, 40))
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
         },
-        min = -40f,
-        max = 40f,
-        steps = 80,
+        min = 1,
+        max = 40,
         icon = { Icon(Icons.Default.AlignVerticalCenter, null) },
-        onLongClick = { showSpacingFineTune = true },
       )
-
-      if (showSpacingFineTune) {
-        FineTuneDialog(
-          title = stringResource(R.string.player_sheets_secondary_sub_spacing_label),
-          value = secondarySpacing,
-          min = -40f,
-          max = 40f,
-          defaultValue = -8.0f,
-          onValueChange = { newSpacing ->
-            val rounded = (newSpacing * 10f).roundToInt() / 10f
-            preferences.secondarySubSpacing.set(rounded)
-            applySecondarySubStyleOverrides(preferences)
-          },
-          onDismissRequest = { showSpacingFineTune = false },
-        )
-      }
-
-      // Secondary subtitle absolute position slider (0.0 to 150.0, 0.1 fine tune)
-      SliderItem(
-        label = stringResource(R.string.player_sheets_secondary_sub_position_label),
-        value = secondarySubPos,
-        valueText = String.format(Locale.US, "%.1f", secondarySubPos),
-        onChange = { rawSecPos ->
-          val rounded = (rawSecPos * 10f).roundToInt() / 10f
-          val curSubPos = preferences.subPos.get()
-          val newSpacing = ((curSubPos - rounded) * 10f).roundToInt() / 10f
-          preferences.secondarySubSpacing.set(newSpacing.coerceIn(-40f, 40f))
-          preferences.secondarySubPos.set(rounded)
-          applySecondarySubStyleOverrides(preferences)
-        },
-        min = 0f,
-        max = 150f,
-        steps = 150,
-        icon = { Icon(Icons.Default.AlignVerticalCenter, null) },
-        onLongClick = { showSecPosFineTune = true },
-      )
-
-      if (showSecPosFineTune) {
-        FineTuneDialog(
-          title = stringResource(R.string.player_sheets_secondary_sub_position_label),
-          value = secondarySubPos,
-          min = 0f,
-          max = 150f,
-          defaultValue = 100.0f,
-          onValueChange = { rawSecPos ->
-            val rounded = (rawSecPos * 10f).roundToInt() / 10f
-            val curSubPos = preferences.subPos.get()
-            val newSpacing = ((curSubPos - rounded) * 10f).roundToInt() / 10f
-            preferences.secondarySubSpacing.set(newSpacing.coerceIn(-40f, 40f))
-            preferences.secondarySubPos.set(rounded)
-            applySecondarySubStyleOverrides(preferences)
-          },
-          onDismissRequest = { showSecPosFineTune = false },
-        )
-      }
 
       // Colors Section
       var currentColorType by remember { mutableStateOf(SecondarySubColorType.Text) }
@@ -466,7 +404,7 @@ fun SecondarySubtitleSettingsCard(modifier: Modifier = Modifier) {
         onColorChange = {
           currentColor = it
           currentColorType.preference(preferences).set(it)
-          applySecondarySubStyleOverrides(preferences)
+          BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
         },
       )
     }
@@ -485,7 +423,7 @@ private fun resetSecondaryColors(
   type: SecondarySubColorType,
 ) {
   type.preference(preferences).delete()
-  applySecondarySubStyleOverrides(preferences)
+  BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
 }
 
 private fun resetSecondarySubtitles(preferences: SubtitlesPreferences) {
@@ -498,10 +436,9 @@ private fun resetSecondarySubtitles(preferences: SubtitlesPreferences) {
   preferences.secondaryShadowOffset.delete()
   preferences.secondaryBorderStyle.delete()
   preferences.secondarySubScale.delete()
-  preferences.secondarySubSpacing.delete()
-  preferences.secondarySubPos.delete()
+  preferences.multiBilingualGap.delete()
   preferences.secondaryTextColor.delete()
   preferences.secondaryBorderColor.delete()
   preferences.secondaryBackgroundColor.delete()
-  applySecondarySubStyleOverrides(preferences)
+  BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, SubtitleMode.Multi)
 }

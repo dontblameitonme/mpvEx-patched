@@ -1,821 +1,1267 @@
 package app.marlboroadvance.mpvex.utils.media
 
+import `is`.xyz.mpv.MPVLib
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import app.marlboroadvance.mpvex.preferences.SubtitleJustification
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.ui.player.controls.components.panels.SubtitlesBorderStyle
-import `is`.xyz.mpv.MPVLib
+import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.InputStream
-import java.nio.ByteBuffer
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.nio.charset.Charset
-import java.nio.charset.CodingErrorAction
+import java.security.MessageDigest
 import java.util.Locale
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
+/**
+ * Result of pre-processing a subtitle file or embedded MKV subtitle tracks into
+ * standardized `.srt` files (for Single mode and independent track inspection) plus
+ * a flowing non-overlapping `.ass` track (`[双语]`) for Dual mode.
+ */
 data class BilingualSplitResult(
-  val primaryFile: File,
-  val secondaryFile: File,
-  val bilingualFile: File,
-  val primaryTitle: String,
-  val secondaryTitle: String,
-  val bilingualTitle: String,
-  val isBilingual: Boolean = true,
+  val primaryFile: File? = null,
+  val secondaryFile: File? = null,
+  val bilingualFile: File? = null,
+  val primaryTitle: String? = null,
+  val secondaryTitle: String? = null,
+  val bilingualTitle: String? = null,
+  val isBilingual: Boolean = false,
 )
 
-/**
- * High-performance parser and splitter for single-file bilingual subtitles.
- * Detects Chinese-English (or CJK + Latin) bilingual dialogues, and splits them into:
- * - Primary track: Chinese lines (positioned at bottom, styled by Primary Subtitle settings)
- * - Secondary track: English lines (clean SRT/ASS, styled by Secondary Subtitle settings)
- *
- * Utilizes CRC32-based disk caching so repeated loads cost 0ms.
- */
+/** Clean, timing-normalized monolingual subtitle cue. */
+data class PlainSubtitleCue(
+  val startMs: Long,
+  val endMs: Long,
+  val text: String,
+)
+
+/** Clean bilingual cue with top (`primaryText`) and bottom (`secondaryText`) channels. */
+data class BilingualSubtitleCue(
+  val startMs: Long,
+  val endMs: Long,
+  val primaryText: String,
+  val secondaryText: String,
+)
+
 object BilingualSubtitleParser {
-  private const val TAG = "BilingualSubParser"
-  private const val CACHE_DIR_NAME = "bilingual_subs_v7"
-
-  private val CJK_REGEX = Regex("[\\u4e00-\\u9fff\\u3400-\\u4dbf]")
-  private val LATIN_REGEX = Regex("[a-zA-Z]")
-  private val TAG_REGEX = Regex("\\{[^}]*\\}")
-  private val ASS_SPLIT_REGEX = Regex("\\\\[Nn]")
-
-  /**
-   * Cleans invisible Unicode bidirectional control characters (LRE, RLE, PDF, LRO, RLO, LRM, RLM),
-   * byte order mark, and zero-width spaces common in web-ripped subtitles (e.g. \u202a).
-   */
-  private val BIDI_AND_CONTROL_CHARS_REGEX = Regex("[\\u202a-\\u202e\\u200e\\u200f\\ufeff\\u200b]")
-
-  /**
-   * Fixes common UTF-8 / Latin-1 non-breaking space mojibake (e.g. Â\u00A0 or Â followed by space),
-   * normalizing them to a standard ASCII space.
-   */
-  private val MOJIBAKE_NBSP_REGEX = Regex("(?:\\u00C2|Â)[\\u00A0\\s]+|[\\u00A0]")
-
-  fun sanitizeSubtitleText(text: String): String {
-    if (text.isEmpty()) return text
-    var result = BIDI_AND_CONTROL_CHARS_REGEX.replace(text, "")
-    result = MOJIBAKE_NBSP_REGEX.replace(result, " ")
-    return result.trim()
-  }
-
-  /**
-   * Cleans all inline ASS style and override tags ({...}) and hard spaces (\\h),
-   * leaving pure subtitle text styled strictly by the user's mpvEx preferences.
-   */
-  fun cleanAssTags(text: String): String {
-    if (text.isEmpty()) return text
-    val sanitized = text.replace(Regex("\\{\\\\p[1-9]\\}[^\\{]*(\\{\\\\p0\\}|$)"), "")
-    val withoutTags = TAG_REGEX.replace(sanitized, "").replace("\\h", " ")
-    return sanitizeSubtitleText(withoutTags)
-  }
-
-  data class CueItem(
-    val startMs: Long,
-    val endMs: Long,
-    val priParts: List<String>,
-    val secParts: List<String>,
+  private const val TAG = "BilingualSubtitleParser"
+  private const val CACHE_DIR_NAME = "bilingual_subs_v8"
+  private val LEGACY_CACHE_DIRS = listOf(
+    "bilingual_subs",
+    "bilingual_subs_v5",
+    "bilingual_subs_v6",
+    "bilingual_subs_v7",
   )
 
-  fun splitIfBilingual(sourceFile: File, context: Context): BilingualSplitResult? {
-    if (!sourceFile.exists() || sourceFile.length() <= 0) return null
+  private const val MIN_CUE_MS = 100L
+  private val ASS_DRAWING_TAG = Regex("""\{\\p[1-9]\d*[^}]*\}""")
+  private val ASS_OVERRIDE_TAG = Regex("""\{\\[^}]*\}|\{\}""")
+  private val HTML_TAG = Regex("""</?(?:i|b|u|s|font|span|ruby|rt|rp)\b[^>]*>""", RegexOption.IGNORE_CASE)
+  private val VTT_POSITION_TAG = Regex("""</?(?:c(?:\.[^>]*)?|v(?:\s+[^>]*)?|lang(?:\s+[^>]*)?|\d{2}:\d{2}(?::\d{2})?\.\d{3})>""", RegexOption.IGNORE_CASE)
+  private val CONTROL_AND_BIDI_CHARS = Regex("""[\uFEFF\u200B-\u200F\u202A-\u202E\u2066-\u2069\u00AD\u0000-\u0009\u000B-\u001F\u007F]""")
+  private val MATROSKA_ASS_PREFIX = Regex("""^\d+,\d+,[^,]*,[^,]*,\d+,\d+,\d+,[^,]*,(.*)$""", RegexOption.DOT_MATCHES_ALL)
+  private val SRT_TIMING_REGEX = Regex(
+    """(\d{1,2}:)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})\s*-->\s*(\d{1,2}:)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})""",
+  )
+  private val ASS_TIME_REGEX = Regex("""(\d+):(\d{2}):(\d{2})\.(\d{2,3})""")
+  private val SPEAKER_DASH_START = Regex("""^[-\u2013\u2014\u2212\uFF0D]\s*\S""")
+  private val SPEAKER_LABEL_LINE = Regex("""^(?:[-\u2013\u2014\u2212\uFF0D]|[\p{L}\d\s]{1,20}[:：])\s*""")
+  private val WHITESPACE_RUN = Regex("""[ \t]+""")
 
-    val ext = sourceFile.extension.lowercase(Locale.ROOT)
-    if (ext !in listOf("ass", "ssa", "srt")) return null
+  // ---------------------------------------------------------------------------
+  // Cache Management
+  // ---------------------------------------------------------------------------
 
-    val cacheDir = File(context.cacheDir, CACHE_DIR_NAME)
-    if (!cacheDir.exists()) cacheDir.mkdirs()
+  fun getCacheDir(context: Context): File {
+    val dir = File(context.cacheDir, CACHE_DIR_NAME)
+    if (!dir.exists()) {
+      dir.mkdirs()
+      cleanupLegacyCacheDirs(context.cacheDir)
+    }
+    return dir
+  }
 
-    val hashKey = ChecksumUtils.getCRC32(
-      "${sourceFile.absolutePath}_${sourceFile.length()}_${sourceFile.lastModified()}"
+  private fun cleanupLegacyCacheDirs(cacheRoot: File) {
+    for (legacyName in LEGACY_CACHE_DIRS) {
+      val legacyDir = File(cacheRoot, legacyName)
+      if (legacyDir.exists()) {
+        runCatching { legacyDir.deleteRecursively() }
+      }
+    }
+  }
+
+  fun computeCacheKey(sourceId: String, sizeBytes: Long, lastModifiedMs: Long): String {
+    val raw = "$sourceId|$sizeBytes|$lastModifiedMs|v8"
+    val digest = MessageDigest.getInstance("MD5").digest(raw.toByteArray(Charsets.UTF_8))
+    return digest.take(6).joinToString("") { "%02x".format(it) }
+  }
+
+  fun getEntryCacheDir(context: Context, key: String): File {
+    val dir = File(getCacheDir(context), key)
+    if (!dir.exists()) dir.mkdirs()
+    return dir
+  }
+
+  fun sanitizeFileNamePart(name: String): String =
+    name.replace(Regex("""[\\/:*?"<>|\r\n]+"""), "_").trim().ifEmpty { "subtitle" }
+
+  // ---------------------------------------------------------------------------
+  // Public Android Entrypoints
+  // ---------------------------------------------------------------------------
+
+  fun splitIfBilingual(
+    file: File,
+    context: Context,
+    preferences: SubtitlesPreferences? = null,
+  ): BilingualSplitResult? {
+    if (!file.exists() || !file.canRead() || file.length() == 0L) return null
+    val ext = file.extension.lowercase(Locale.ROOT)
+    if (ext !in setOf("srt", "ass", "ssa", "vtt")) return null
+
+    val key = computeCacheKey(file.absolutePath, file.length(), file.lastModified())
+    val targetDir = getEntryCacheDir(context, key)
+    val baseName = sanitizeFileNamePart(file.nameWithoutExtension)
+
+    findValidCachedResult(targetDir, baseName)?.let { return it }
+
+    val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
+    val text = decodeSubtitleBytes(bytes)
+    return processTextToCache(
+      rawText = text,
+      ext = ext,
+      baseName = baseName,
+      targetDir = targetDir,
+      preferences = preferences,
     )
-    val folder = File(cacheDir, hashKey)
-    if (!folder.exists()) folder.mkdirs()
+  }
 
-    val baseName = sourceFile.nameWithoutExtension
-    val primaryFileName = "[中] $baseName.ass"
-    val secondaryFileName = "[英] $baseName.ass"
-    val bilingualFileName = "[双语] $baseName.ass"
-    val primaryFile = File(folder, primaryFileName)
-    val secondaryFile = File(folder, secondaryFileName)
-    val bilingualFile = File(folder, bilingualFileName)
+  fun splitIfBilingual(
+    uri: Uri,
+    context: Context,
+    displayNameHint: String? = null,
+    preferences: SubtitlesPreferences? = null,
+  ): BilingualSplitResult? {
+    if (uri.scheme == "file") {
+      val path = uri.path ?: return null
+      return splitIfBilingual(File(path), context, preferences)
+    }
 
-    // Cache hit: 0ms execution
-    if (primaryFile.exists() && primaryFile.length() > 0 &&
-      secondaryFile.exists() && secondaryFile.length() > 0 &&
-      bilingualFile.exists() && bilingualFile.length() > 0
-    ) {
-      Log.d(TAG, "Cache hit for bilingual subtitle: ${sourceFile.name}")
+    val rawName = displayNameHint
+      ?: resolveDisplayName(uri, context)
+      ?: uri.lastPathSegment?.substringAfterLast('/')
+      ?: "subtitle.srt"
+    val ext = rawName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+    if (ext !in setOf("srt", "ass", "ssa", "vtt")) return null
+
+    val bytes = runCatching {
+      context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+    }.getOrNull() ?: return null
+    if (bytes.isEmpty()) return null
+
+    val text = decodeSubtitleBytes(bytes)
+    val key = computeCacheKey(uri.toString(), bytes.size.toLong(), text.hashCode().toLong())
+    val targetDir = getEntryCacheDir(context, key)
+    val baseName = sanitizeFileNamePart(rawName.substringBeforeLast('.', rawName))
+
+    findValidCachedResult(targetDir, baseName)?.let { return it }
+
+    return processTextToCache(
+      rawText = text,
+      ext = ext,
+      baseName = baseName,
+      targetDir = targetDir,
+      preferences = preferences,
+    )
+  }
+
+  /**
+   * Pairs two independent single-language subtitle files (e.g. external `zh.srt` + `en.srt`
+   * selected in Dual mode) into a single bottom-anchored flowing `[双语]` ASS file so they lift
+   * cleanly as one block and never collide when wrapped to multiple lines.
+   */
+  fun mergeTwoFilesToBilingualAss(
+    primaryFile: File,
+    secondaryFile: File,
+    baseName: String,
+    context: Context,
+    preferences: SubtitlesPreferences? = null,
+  ): File? {
+    if (!primaryFile.exists() || !secondaryFile.exists()) return null
+    val key = computeCacheKey(
+      "${primaryFile.absolutePath}+${secondaryFile.absolutePath}",
+      primaryFile.length() xor secondaryFile.length(),
+      primaryFile.lastModified() xor secondaryFile.lastModified(),
+    )
+    val targetDir = getEntryCacheDir(context, key)
+    val cleanBase = sanitizeFileNamePart(baseName)
+    val outFile = File(targetDir, "[双语] $cleanBase.ass")
+    if (isValidAssFile(outFile)) return outFile
+
+    val priCues = parseFileToPlainCues(primaryFile)
+    val secCues = parseFileToPlainCues(secondaryFile)
+    if (priCues.isEmpty() || secCues.isEmpty()) return null
+
+    val merged = alignCueStreams(priCues, secCues)
+    if (merged.isEmpty()) return null
+
+    return if (writeBilingualAssFile(merged, outFile, preferences)) outFile else null
+  }
+
+  private fun resolveDisplayName(uri: Uri, context: Context): String? =
+    runCatching {
+      context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+        if (c.moveToFirst()) c.getString(0) else null
+      }
+    }.getOrNull()
+
+  private fun findValidCachedResult(dir: File, baseName: String): BilingualSplitResult? {
+    val pri = File(dir, "[中] $baseName.srt")
+    val sec = File(dir, "[英] $baseName.srt")
+    val bi = File(dir, "[双语] $baseName.ass")
+    if (isValidSrtFile(pri) && isValidSrtFile(sec) && isValidAssFile(bi)) {
       return BilingualSplitResult(
-        primaryFile = primaryFile,
-        secondaryFile = secondaryFile,
-        bilingualFile = bilingualFile,
+        primaryFile = pri,
+        secondaryFile = sec,
+        bilingualFile = bi,
         primaryTitle = "[中] $baseName",
         secondaryTitle = "[英] $baseName",
         bilingualTitle = "[双语] $baseName",
+        isBilingual = true,
       )
     }
 
-    return try {
-      val rawBytes = sourceFile.readBytes()
-      val content = readTextWithAutoEncoding(rawBytes)
-      val result = if (ext == "srt") {
-        splitSrt(content, folder, primaryFile, secondaryFile, bilingualFile, baseName)
-      } else {
-        splitAss(content, folder, primaryFile, secondaryFile, bilingualFile, baseName)
-      }
-      result
-    } catch (e: Exception) {
-      Log.e(TAG, "Failed to split bilingual subtitle ${sourceFile.name}: ${e.message}", e)
-      null
+    val std = File(dir, "[标准] $baseName.srt")
+    if (isValidSrtFile(std)) {
+      return BilingualSplitResult(
+        primaryFile = std,
+        primaryTitle = "[标准] $baseName",
+        isBilingual = false,
+      )
     }
+    return null
   }
 
-  fun splitIfBilingual(uri: Uri, context: Context): BilingualSplitResult? {
-    return try {
-      val inputStream = context.contentResolver.openInputStream(uri) ?: return null
-      val rawBytes = inputStream.use { it.readBytes() }
-      if (rawBytes.isEmpty()) return null
+  // ---------------------------------------------------------------------------
+  // Pure Kotlin Core: Pre-processing & Splitting
+  // ---------------------------------------------------------------------------
 
-      val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "subtitle.ass"
-      val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
-      if (ext !in listOf("ass", "ssa", "srt")) return null
-
-      val cacheDir = File(context.cacheDir, CACHE_DIR_NAME)
-      if (!cacheDir.exists()) cacheDir.mkdirs()
-
-      val hashKey = ChecksumUtils.getCRC32("${uri}_${rawBytes.size}")
-      val folder = File(cacheDir, hashKey)
-      if (!folder.exists()) folder.mkdirs()
-
-      val baseName = fileName.substringBeforeLast('.')
-      val primaryFileName = "[中] $baseName.ass"
-      val secondaryFileName = "[英] $baseName.ass"
-      val bilingualFileName = "[双语] $baseName.ass"
-      val primaryFile = File(folder, primaryFileName)
-      val secondaryFile = File(folder, secondaryFileName)
-      val bilingualFile = File(folder, bilingualFileName)
-
-      if (primaryFile.exists() && primaryFile.length() > 0 &&
-        secondaryFile.exists() && secondaryFile.length() > 0 &&
-        bilingualFile.exists() && bilingualFile.length() > 0
-      ) {
-        return BilingualSplitResult(
-          primaryFile = primaryFile,
-          secondaryFile = secondaryFile,
-          bilingualFile = bilingualFile,
-          primaryTitle = "[中] $baseName",
-          secondaryTitle = "[英] $baseName",
-          bilingualTitle = "[双语] $baseName",
-        )
-      }
-
-      val content = readTextWithAutoEncoding(rawBytes)
-      if (ext == "srt") {
-        splitSrt(content, folder, primaryFile, secondaryFile, bilingualFile, baseName)
-      } else {
-        splitAss(content, folder, primaryFile, secondaryFile, bilingualFile, baseName)
-      }
-    } catch (e: Exception) {
-      Log.e(TAG, "Failed to split bilingual subtitle from URI $uri: ${e.message}", e)
-      null
-    }
-  }
-
-  private fun splitAss(
-    content: String,
-    folder: File,
-    primaryFile: File,
-    secondaryFile: File,
-    bilingualFile: File,
+  /**
+   * Pure Kotlin processor usable directly in JVM unit tests as well as Android runtime.
+   *
+   * - Bilingual SRT/VTT/ASS -> produces `[中] <base>.srt`, `[英] <base>.srt`, `[双语] <base>.ass`.
+   * - Monolingual messy/multi-line SRT/VTT (or malformed ASS with raw CR/LF inside dialogue)
+   *   -> normalizes into a clean `[标准] <base>.srt`.
+   * - Clean stylized monolingual ASS fansubs or already-clean single-line SRT -> returns null.
+   */
+  fun processTextToCache(
+    rawText: String,
+    ext: String,
     baseName: String,
+    targetDir: File,
+    preferences: SubtitlesPreferences? = null,
   ): BilingualSplitResult? {
-    // Force standard 1080p canvas for all split ASS subtitles, eliminating font scaling bugs
-    // caused by legacy low-resolution canvases (e.g. 288p, 360p, 576p)
-    val playResX = 1920
-    val playResY = 1080
+    if (!targetDir.exists()) targetDir.mkdirs()
+    val cleanBase = sanitizeFileNamePart(baseName)
+    val isAss = ext == "ass" || ext == "ssa"
 
-    val cues = parseAssToCues(content)
-    val bilingualCount = cues.count { it.priParts.isNotEmpty() && it.secParts.isNotEmpty() }
+    val rawCues = if (isAss) extractRawAssCues(rawText) else extractRawSrtOrVttCues(rawText)
+    if (rawCues.isEmpty()) return null
 
-    if (cues.isEmpty() || bilingualCount < 5 || (bilingualCount.toDouble() / cues.size < 0.1 && bilingualCount < 20)) {
-      Log.d(TAG, "Not a bilingual ASS subtitle (bilingual=$bilingualCount, total=${cues.size})")
+    val classified = rawCues.mapNotNull { classifyRawCue(it) }
+    if (classified.isEmpty()) return null
+
+    val bilingualCount = classified.count { it.primaryText.isNotEmpty() && it.secondaryText.isNotEmpty() }
+    val isBilingual = bilingualCount >= 3 || (bilingualCount >= 1 && bilingualCount * 4 >= classified.size)
+
+    if (isBilingual) {
+      val priCues = classified.mapNotNull {
+        if (it.primaryText.isNotEmpty()) PlainSubtitleCue(it.startMs, it.endMs, it.primaryText) else null
+      }
+      val secCues = classified.mapNotNull {
+        if (it.secondaryText.isNotEmpty()) PlainSubtitleCue(it.startMs, it.endMs, it.secondaryText) else null
+      }
+      val biCues = classified.map {
+        BilingualSubtitleCue(it.startMs, it.endMs, it.primaryText, it.secondaryText)
+      }
+
+      val priFile = File(targetDir, "[中] $cleanBase.srt")
+      val secFile = File(targetDir, "[英] $cleanBase.srt")
+      val biFile = File(targetDir, "[双语] $cleanBase.ass")
+
+      val okPri = priCues.isNotEmpty() && writeSrtFile(priCues, priFile)
+      val okSec = secCues.isNotEmpty() && writeSrtFile(secCues, secFile)
+      val okBi = biCues.isNotEmpty() && writeBilingualAssFile(biCues, biFile, preferences)
+
+      if (!okBi && !okPri && !okSec) return null
+      return BilingualSplitResult(
+        primaryFile = priFile.takeIf { okPri },
+        secondaryFile = secFile.takeIf { okSec },
+        bilingualFile = biFile.takeIf { okBi },
+        primaryTitle = if (okPri) "[中] $cleanBase" else null,
+        secondaryTitle = if (okSec) "[英] $cleanBase" else null,
+        bilingualTitle = if (okBi) "[双语] $cleanBase" else null,
+        isBilingual = okPri && okSec,
+      )
+    }
+
+    // Preserve intact styled monolingual ASS fansubs unless broken raw newlines corrupt events.
+    if (isAss && !hasBrokenRawNewlinesInAssEvents(rawText)) {
       return null
     }
 
-    Log.d(TAG, "Splitting bilingual ASS subtitle: $bilingualCount/${cues.size} bilingual dialogues")
+    val needsNormalization = classified.any { it.wasDirty }
+    if (!needsNormalization) return null
 
-    val tempPri = File.createTempFile("pri_", ".tmp", folder)
-    val tempSec = File.createTempFile("sec_", ".tmp", folder)
-    val tempBi = File.createTempFile("bi_", ".tmp", folder)
-
-    return try {
-      tempPri.bufferedWriter(Charsets.UTF_8).use { priWriter ->
-        tempSec.bufferedWriter(Charsets.UTF_8).use { secWriter ->
-          tempBi.bufferedWriter(Charsets.UTF_8).use { biWriter ->
-            writePrimaryAssHeader(priWriter, baseName, playResX, playResY)
-            writeSecondaryAssHeader(secWriter, baseName, playResX, playResY)
-            writeBilingualAssHeader(biWriter, baseName, playResX, playResY)
-            writeAlignedCues(cues, priWriter, secWriter, biWriter)
-          }
-        }
-      }
-
-      tempPri.renameTo(primaryFile)
-      tempSec.renameTo(secondaryFile)
-      tempBi.renameTo(bilingualFile)
-
-      BilingualSplitResult(
-        primaryFile = primaryFile,
-        secondaryFile = secondaryFile,
-        bilingualFile = bilingualFile,
-        primaryTitle = "[中] $baseName",
-        secondaryTitle = "[英] $baseName",
-        bilingualTitle = "[双语] $baseName",
+    val normalizedCues = classified.mapNotNull { cue ->
+      val combined = joinNormalizedLines(
+        (cue.primaryLines + cue.secondaryLines).filter { it.isNotEmpty() },
       )
-    } catch (e: Exception) {
-      tempPri.delete()
-      tempSec.delete()
-      tempBi.delete()
-      throw e
+      if (combined.isEmpty()) null else PlainSubtitleCue(cue.startMs, cue.endMs, combined)
     }
+    if (normalizedCues.isEmpty()) return null
+
+    val stdFile = File(targetDir, "[标准] $cleanBase.srt")
+    if (!writeSrtFile(normalizedCues, stdFile)) return null
+
+    return BilingualSplitResult(
+      primaryFile = stdFile,
+      primaryTitle = "[标准] $cleanBase",
+      isBilingual = false,
+    )
   }
 
-  private fun splitSrt(
-    content: String,
-    folder: File,
-    primaryFile: File,
-    secondaryFile: File,
-    bilingualFile: File,
-    baseName: String,
-  ): BilingualSplitResult? {
-    val cues = parseSrtToCues(content)
-    val bilingualCount = cues.count { it.priParts.isNotEmpty() && it.secParts.isNotEmpty() }
+  private data class RawCue(
+    val startMs: Long,
+    val endMs: Long,
+    val rawPayload: String,
+    val fromAss: Boolean,
+  )
 
-    if (cues.isEmpty() || bilingualCount < 5 || (bilingualCount.toDouble() / cues.size < 0.1 && bilingualCount < 20)) {
-      Log.d(TAG, "Not a bilingual SRT subtitle (bilingual=$bilingualCount, total=${cues.size})")
-      return null
-    }
+  private data class ClassifiedCue(
+    val startMs: Long,
+    val endMs: Long,
+    val primaryLines: List<String>,
+    val secondaryLines: List<String>,
+    val primaryText: String,
+    val secondaryText: String,
+    val wasDirty: Boolean,
+  )
 
-    Log.d(TAG, "Splitting bilingual SRT subtitle: $bilingualCount/${cues.size} bilingual cues")
+  private fun classifyRawCue(raw: RawCue): ClassifiedCue? {
+    val lines = cleanPayloadToLines(raw.rawPayload, stripMatroskaPrefix = false, isAss = raw.fromAss)
+    if (lines.isEmpty()) return null
 
-    val tempPri = File.createTempFile("pri_", ".tmp", folder)
-    val tempSec = File.createTempFile("sec_", ".tmp", folder)
-    val tempBi = File.createTempFile("bi_", ".tmp", folder)
+    val hadFormattingNoise =
+      lines.size > 1 ||
+        raw.rawPayload.contains('\n') ||
+        raw.rawPayload.contains('\r') ||
+        ASS_OVERRIDE_TAG.containsMatchIn(raw.rawPayload) ||
+        HTML_TAG.containsMatchIn(raw.rawPayload) ||
+        CONTROL_AND_BIDI_CHARS.containsMatchIn(raw.rawPayload)
 
-    return try {
-      tempPri.bufferedWriter(Charsets.UTF_8).use { priWriter ->
-        tempSec.bufferedWriter(Charsets.UTF_8).use { secWriter ->
-          tempBi.bufferedWriter(Charsets.UTF_8).use { biWriter ->
-            writePrimaryAssHeader(priWriter, baseName, 1920, 1080)
-            writeSecondaryAssHeader(secWriter, baseName, 1920, 1080)
-            writeBilingualAssHeader(biWriter, baseName, 1920, 1080)
-            writeAlignedCues(cues, priWriter, secWriter, biWriter)
-          }
-        }
-      }
+    val priLines = mutableListOf<String>()
+    val secLines = mutableListOf<String>()
 
-      tempPri.renameTo(primaryFile)
-      tempSec.renameTo(secondaryFile)
-      tempBi.renameTo(bilingualFile)
-
-      BilingualSplitResult(
-        primaryFile = primaryFile,
-        secondaryFile = secondaryFile,
-        bilingualFile = bilingualFile,
-        primaryTitle = "[中] $baseName",
-        secondaryTitle = "[英] $baseName",
-        bilingualTitle = "[双语] $baseName",
-      )
-    } catch (e: Exception) {
-      tempPri.delete()
-      tempSec.delete()
-      tempBi.delete()
-      throw e
-    }
-  }
-
-  private fun parseSrtToCues(content: String): List<CueItem> {
-    val rawCues = mutableListOf<CueItem>()
-    val normalized = content.replace("\r\n", "\n")
-    val blocks = normalized.split("\n\n").map { it.trim() }.filter { it.isNotEmpty() }
-
-    for (block in blocks) {
-      val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
-      val timeLineIdx = lines.indexOfFirst { it.contains("-->") }
-      if (timeLineIdx == -1) continue
-
-      val timeLine = lines[timeLineIdx]
-      val timeParts = timeLine.split("-->").map { it.trim() }
-      if (timeParts.size < 2) continue
-
-      val startMs = parseTimeToMs(timeParts[0]) ?: continue
-      val endStr = timeParts[1].substringBefore(" ").trim()
-      val endMs = parseTimeToMs(endStr) ?: continue
-
-      val textLines = lines.drop(timeLineIdx + 1)
-      val linePieces = textLines.flatMap { line ->
-        line.split(Regex("(?i)<br\\s*/?>|\\\\N"))
-      }.map { 
-        sanitizeSubtitleText(it.replace(Regex("<[^>]*>"), ""))
-      }.filter { it.isNotEmpty() }
-
-      val priParts = mutableListOf<String>()
-      val secParts = mutableListOf<String>()
-
-      for (cleaned in linePieces) {
-        val hasCjk = CJK_REGEX.containsMatchIn(cleaned)
-        val hasLatin = LATIN_REGEX.containsMatchIn(cleaned)
-
-        if (hasCjk) {
-          priParts.add(cleaned)
-        } else if (hasLatin) {
-          secParts.add(cleaned)
+    for (line in lines) {
+      if (containsCjk(line)) {
+        // Handle explicit single-line bilingual separators (e.g. "中文\tEnglish" or "中文 | English").
+        val inlineSplit = trySplitInlineBilingualLine(line)
+        if (inlineSplit != null) {
+          priLines.add(inlineSplit.first)
+          secLines.add(inlineSplit.second)
         } else {
-          if (priParts.isNotEmpty()) {
-            priParts.add(cleaned)
-          } else if (secParts.isNotEmpty()) {
-            secParts.add(cleaned)
-          } else {
-            priParts.add(cleaned)
-          }
+          priLines.add(line)
         }
-      }
-
-      if (priParts.isNotEmpty() || secParts.isNotEmpty()) {
-        rawCues.add(CueItem(startMs, endMs, priParts, secParts))
+      } else {
+        secLines.add(line)
       }
     }
 
-    return alignCues(rawCues)
+    val priText = joinNormalizedLines(priLines)
+    val secText = joinNormalizedLines(secLines)
+    if (priText.isEmpty() && secText.isEmpty()) return null
+
+    return ClassifiedCue(
+      startMs = raw.startMs,
+      endMs = max(raw.endMs, raw.startMs + MIN_CUE_MS),
+      primaryLines = priLines,
+      secondaryLines = secLines,
+      primaryText = priText,
+      secondaryText = secText,
+      wasDirty = hadFormattingNoise,
+    )
   }
 
-  private fun parseAssToCues(content: String): List<CueItem> {
-    val rawCues = mutableListOf<CueItem>()
-    val lines = content.lines()
+  private fun trySplitInlineBilingualLine(line: String): Pair<String, String>? {
+    val sep = when {
+      line.contains('\t') -> "\t"
+      line.contains(" | ") -> " | "
+      else -> return null
+    }
+    val idx = line.indexOf(sep)
+    if (idx <= 0) return null
+    val left = line.substring(0, idx).trim()
+    val right = line.substring(idx + sep.length).trim()
+    if (left.isEmpty() || right.length < 2) return null
+    if (containsCjk(left) && !containsCjk(right) && containsLetter(right)) {
+      return left to right
+    }
+    return null
+  }
+
+  /**
+   * Strips MKV `ReadOrder,...` prefix (when [stripMatroskaPrefix] is true), ASS `{...}` tags,
+   * HTML styling tags, bidi/BOM control characters, and splits into trimmed non-empty lines.
+   * Returns empty list for ASS vector drawing blocks (`\p1`..`\p9`).
+   */
+  fun cleanPayloadToLines(
+    rawPayload: String,
+    stripMatroskaPrefix: Boolean = false,
+    isAss: Boolean = false,
+  ): List<String> {
+    var payload = rawPayload
+    if (stripMatroskaPrefix) {
+      payload = stripMatroskaAssPrefix(payload)
+    }
+    if (ASS_DRAWING_TAG.containsMatchIn(payload)) {
+      val strippedCheck = ASS_OVERRIDE_TAG.replace(payload, "").trim()
+      if (strippedCheck.isEmpty() || Regex("""^[mlbscpa0-9.\s-]+$""", RegexOption.IGNORE_CASE).matches(strippedCheck)) {
+        return emptyList()
+      }
+    }
+
+    payload = payload
+      .replace("\r\n", "\n")
+      .replace('\r', '\n')
+      .replace("\\N", "\n")
+      .replace("\\n", "\n")
+      .replace("\\h", " ")
+
+    payload = ASS_OVERRIDE_TAG.replace(payload, "")
+    payload = HTML_TAG.replace(payload, "")
+    if (!isAss) {
+      payload = VTT_POSITION_TAG.replace(payload, "")
+    }
+    payload = CONTROL_AND_BIDI_CHARS.replace(payload, "")
+
+    return payload
+      .split('\n')
+      .map { WHITESPACE_RUN.replace(it, " ").trim() }
+      .filter { it.isNotEmpty() }
+  }
+
+  fun stripMatroskaAssPrefix(raw: String): String {
+    val normalized = raw.trimStart('\uFEFF')
+    MATROSKA_ASS_PREFIX.matchEntire(normalized)?.let { return it.groupValues[1] }
+    // Fallback for unusual headers with empty Effect containing 8 commas after numeric ReadOrder,Layer
+    if (Regex("""^\d+,\d+,""".trim()).containsMatchIn(normalized)) {
+      var commas = 0
+      for (i in normalized.indices) {
+        if (normalized[i] == ',') {
+          commas++
+          if (commas == 8) return normalized.substring(i + 1)
+        } else if (normalized[i] == '\n') {
+          break
+        }
+      }
+    }
+    return raw
+  }
+
+  /**
+   * Joins wrapped lines belonging to the SAME language into one clean logical line, preserving
+   * explicit `\n` ONLY between genuine two-speaker dialogue turns (`- Speaker A\n- Speaker B`).
+   * Avoids inserting spaces between adjacent CJK characters while joining Latin phrases with `" "`.
+   */
+  fun joinNormalizedLines(lines: List<String>): String {
+    if (lines.isEmpty()) return ""
+    if (lines.size == 1) return lines[0]
+
+    val sb = StringBuilder(lines[0])
+    for (i in 1 until lines.size) {
+      val prev = lines[i - 1]
+      val next = lines[i]
+      val isTwoSpeakerTurn =
+        SPEAKER_DASH_START.containsMatchIn(next) &&
+          (i == 1 && SPEAKER_LABEL_LINE.containsMatchIn(prev) || SPEAKER_DASH_START.containsMatchIn(prev))
+
+      if (isTwoSpeakerTurn) {
+        sb.append('\n').append(next)
+      } else {
+        val prevLast = prev.lastOrNull()
+        val nextFirst = next.firstOrNull()
+        val needSpace =
+          prevLast != null &&
+            nextFirst != null &&
+            !(isCjkOrCjkPunct(prevLast) || isCjkOrCjkPunct(nextFirst))
+        if (needSpace) sb.append(' ')
+        sb.append(next)
+      }
+    }
+    return sb.toString().trim()
+  }
+
+  fun cleanSubtitleTextSingle(raw: String, stripMatroskaPrefix: Boolean = false, isAss: Boolean = false): String =
+    joinNormalizedLines(cleanPayloadToLines(raw, stripMatroskaPrefix = stripMatroskaPrefix, isAss = isAss))
+
+  // ---------------------------------------------------------------------------
+  // Cue Parsers (SRT / VTT / ASS)
+  // ---------------------------------------------------------------------------
+
+  fun parseFileToPlainCues(file: File): List<PlainSubtitleCue> {
+    if (!file.exists() || file.length() == 0L) return emptyList()
+    val ext = file.extension.lowercase(Locale.ROOT)
+    val text = runCatching { decodeSubtitleBytes(file.readBytes()) }.getOrNull() ?: return emptyList()
+    val rawCues = if (ext == "ass" || ext == "ssa") extractRawAssCues(text) else extractRawSrtOrVttCues(text)
+    return rawCues.mapNotNull { cue ->
+      val cleaned = cleanSubtitleTextSingle(cue.rawPayload, stripMatroskaPrefix = false, isAss = cue.fromAss)
+      if (cleaned.isEmpty()) null else PlainSubtitleCue(cue.startMs, max(cue.endMs, cue.startMs + MIN_CUE_MS), cleaned)
+    }
+  }
+
+  private fun extractRawSrtOrVttCues(rawText: String): List<RawCue> {
+    val lines = rawText
+      .replace("\r\n", "\n")
+      .replace('\r', '\n')
+      .split('\n')
+
+    val result = mutableListOf<RawCue>()
+    var i = 0
+    while (i < lines.size) {
+      val trimmed = lines[i].trim()
+      val match = SRT_TIMING_REGEX.find(trimmed)
+      if (match == null) {
+        i++
+        continue
+      }
+
+      val startMs = parseSrtRegexTime(match, groupOffset = 1)
+      val endMs = parseSrtRegexTime(match, groupOffset = 5)
+      i++
+
+      val body = StringBuilder()
+      while (i < lines.size) {
+        val nextLine = lines[i]
+        val nextTrim = nextLine.trim()
+        if (nextTrim.isEmpty()) {
+          i++
+          break
+        }
+        // Recover cleanly when a cue misses the blank separator line before the next index+timing.
+        if (nextTrim.all { it.isDigit() } && i + 1 < lines.size && SRT_TIMING_REGEX.containsMatchIn(lines[i + 1])) {
+          break
+        }
+        if (SRT_TIMING_REGEX.containsMatchIn(nextTrim)) {
+          break
+        }
+        if (body.isNotEmpty()) body.append('\n')
+        body.append(nextLine)
+        i++
+      }
+
+      val payload = body.toString().trim()
+      if (startMs >= 0 && payload.isNotEmpty()) {
+        result.add(RawCue(startMs, max(endMs, startMs + MIN_CUE_MS), payload, fromAss = false))
+      }
+    }
+    return result
+  }
+
+  private fun extractRawAssCues(rawText: String): List<RawCue> {
+    val lines = rawText.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+    val result = mutableListOf<RawCue>()
+    var inEvents = false
+    var startIdx = 1
+    var endIdx = 2
+    var textIdx = 9
+    var formatColumns = 10
 
     for (line in lines) {
       val trimmed = line.trim()
-      if (!trimmed.startsWith("Dialogue:", ignoreCase = true)) continue
+      if (trimmed.startsWith("[")) {
+        inEvents = trimmed.equals("[Events]", ignoreCase = true)
+        continue
+      }
+      if (!inEvents) continue
 
-      val parts = trimmed.split(",", limit = 10)
-      if (parts.size < 10) continue
-
-      val startMs = parseTimeToMs(parts[1]) ?: continue
-      val endMs = parseTimeToMs(parts[2]) ?: continue
-      val rawText = parts[9]
-      val subParts = rawText.split(ASS_SPLIT_REGEX)
-
-      val priParts = mutableListOf<String>()
-      val secParts = mutableListOf<String>()
-
-      for (p in subParts) {
-        val pClean = cleanAssTags(p)
-        if (pClean.isEmpty()) continue
-        val hasCjk = CJK_REGEX.containsMatchIn(pClean)
-        val hasLatin = LATIN_REGEX.containsMatchIn(pClean)
-
-        if (hasCjk) {
-          priParts.add(pClean)
-        } else if (hasLatin) {
-          secParts.add(pClean)
-        } else {
-          if (priParts.isNotEmpty()) {
-            priParts.add(pClean)
-          } else if (secParts.isNotEmpty()) {
-            secParts.add(pClean)
-          } else {
-            priParts.add(pClean)
-          }
-        }
+      if (trimmed.startsWith("Format:", ignoreCase = true)) {
+        val cols = trimmed.substringAfter(':').split(',').map { it.trim().lowercase(Locale.ROOT) }
+        formatColumns = cols.size
+        startIdx = cols.indexOf("start").takeIf { it >= 0 } ?: 1
+        endIdx = cols.indexOf("end").takeIf { it >= 0 } ?: 2
+        textIdx = cols.indexOf("text").takeIf { it >= 0 } ?: (cols.size - 1)
+        continue
       }
 
-      if (priParts.isNotEmpty() || secParts.isNotEmpty()) {
-        rawCues.add(CueItem(startMs, endMs, priParts, secParts))
+      if (!trimmed.startsWith("Dialogue:", ignoreCase = true)) continue
+      val afterColon = trimmed.substringAfter(':').trimStart()
+      val parts = afterColon.split(',', limit = max(formatColumns, textIdx + 1))
+      if (parts.size <= max(max(startIdx, endIdx), textIdx)) continue
+
+      val startMs = parseAssTime(parts[startIdx].trim())
+      val endMs = parseAssTime(parts[endIdx].trim())
+      val textPayload = parts[textIdx]
+      if (startMs >= 0 && textPayload.isNotBlank()) {
+        result.add(RawCue(startMs, max(endMs, startMs + MIN_CUE_MS), textPayload, fromAss = true))
+      }
+    }
+    return result
+  }
+
+  private fun hasBrokenRawNewlinesInAssEvents(rawText: String): Boolean {
+    val eventsIdx = rawText.indexOf("[Events]", ignoreCase = true)
+    if (eventsIdx < 0) return false
+    val lines = rawText.substring(eventsIdx).replace("\r\n", "\n").replace('\r', '\n').split('\n')
+    for (line in lines) {
+      val t = line.trim()
+      if (t.isEmpty() || t.startsWith("[") || t.startsWith("Format:", ignoreCase = true) ||
+        t.startsWith("Dialogue:", ignoreCase = true) || t.startsWith("Comment:", ignoreCase = true) ||
+        t.startsWith(";")
+      ) {
+        continue
+      }
+      return true
+    }
+    return false
+  }
+
+  // ---------------------------------------------------------------------------
+  // Timeline Alignment (MKV Dual Tracks & Paired External Tracks)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Aligns primary (`chiCues`) and secondary (`engCues`) timelines cleanly:
+   * - Supports 1:1 matching with boundary tolerance (no start/end flicker);
+   * - Supports 1:N and N:1 splitting (keeps long Chinese line visible across 2 rapid English cuts);
+   * - Preserves unmatched primary-only or secondary-only cues cleanly.
+   */
+  fun alignCueStreams(
+    primaryCues: List<PlainSubtitleCue>,
+    secondaryCues: List<PlainSubtitleCue>,
+  ): List<BilingualSubtitleCue> {
+    if (primaryCues.isEmpty()) {
+      return secondaryCues.map { BilingualSubtitleCue(it.startMs, it.endMs, "", it.text) }
+    }
+    if (secondaryCues.isEmpty()) {
+      return primaryCues.map { BilingualSubtitleCue(it.startMs, it.endMs, it.text, "") }
+    }
+
+    val priSorted = primaryCues.sortedBy { it.startMs }
+    val secSorted = secondaryCues.sortedBy { it.startMs }
+
+    val priMatches = Array(priSorted.size) { mutableListOf<Int>() }
+    val secAssignedToPri = IntArray(secSorted.size) { -1 }
+
+    var priHint = 0
+    for (j in secSorted.indices) {
+      val sec = secSorted[j]
+      val secDur = max(1L, sec.endMs - sec.startMs)
+      while (priHint < priSorted.size && priSorted[priHint].endMs + 450L < sec.startMs) {
+        priHint++
+      }
+
+      var bestIdx = -1
+      var bestScore = 0.0
+      var k = max(0, priHint - 1)
+      while (k < priSorted.size && priSorted[k].startMs - 450L <= sec.endMs) {
+        val pri = priSorted[k]
+        val overlap = max(0L, min(pri.endMs, sec.endMs) - max(pri.startMs, sec.startMs))
+        val priDur = max(1L, pri.endMs - pri.startMs)
+        val minDur = min(priDur, secDur).toDouble()
+        val startDiff = kotlin.math.abs(pri.startMs - sec.startMs)
+        val endDiff = kotlin.math.abs(pri.endMs - sec.endMs)
+
+        val ratio = overlap / minDur
+        val nearAligned = startDiff <= 400L && endDiff <= 600L
+        if (ratio >= 0.45 || (overlap > 0L && nearAligned)) {
+          val score = overlap.toDouble() - startDiff * 0.25
+          if (score > bestScore || (bestIdx == -1 && nearAligned)) {
+            bestScore = score
+            bestIdx = k
+          }
+        }
+        k++
+      }
+
+      if (bestIdx >= 0) {
+        secAssignedToPri[j] = bestIdx
+        priMatches[bestIdx].add(j)
       }
     }
 
-    return alignCues(rawCues)
+    val out = ArrayList<BilingualSubtitleCue>(priSorted.size + secSorted.size / 4)
+
+    for (i in priSorted.indices) {
+      val pri = priSorted[i]
+      val secIndices = priMatches[i]
+      when {
+        secIndices.isEmpty() -> {
+          out.add(BilingualSubtitleCue(pri.startMs, pri.endMs, pri.text, ""))
+        }
+
+        secIndices.size == 1 -> {
+          val sec = secSorted[secIndices[0]]
+          val start = min(pri.startMs, sec.startMs)
+          val end = max(pri.endMs, sec.endMs)
+          out.add(BilingualSubtitleCue(start, end, pri.text, sec.text))
+        }
+
+        else -> {
+          // 1 Primary spans N Secondary segments: preserve each Secondary segment timing while
+          // stretching only outer boundaries to pri.start/pri.end so Chinese never vanishes mid-way.
+          for (idxPos in secIndices.indices) {
+            val sec = secSorted[secIndices[idxPos]]
+            val segStart = if (idxPos == 0) min(pri.startMs, sec.startMs) else sec.startMs
+            val segEnd = if (idxPos == secIndices.lastIndex) max(pri.endMs, sec.endMs) else sec.endMs
+            out.add(BilingualSubtitleCue(segStart, max(segEnd, segStart + MIN_CUE_MS), pri.text, sec.text))
+          }
+        }
+      }
+    }
+
+    for (j in secSorted.indices) {
+      if (secAssignedToPri[j] == -1) {
+        val sec = secSorted[j]
+        out.add(BilingualSubtitleCue(sec.startMs, sec.endMs, "", sec.text))
+      }
+    }
+
+    out.sortWith(compareBy<BilingualSubtitleCue> { it.startMs }.thenBy { it.endMs })
+    return snapMinorOverlaps(out)
+  }
+
+  private fun snapMinorOverlaps(cues: List<BilingualSubtitleCue>): List<BilingualSubtitleCue> {
+    if (cues.size < 2) return cues
+    val adjusted = cues.toMutableList()
+    for (i in 0 until adjusted.lastIndex) {
+      val curr = adjusted[i]
+      val next = adjusted[i + 1]
+      if (curr.endMs > next.startMs) {
+        val visibleMsIfTrimmed = next.startMs - curr.startMs
+        val overlapMs = curr.endMs - next.startMs
+        if (visibleMsIfTrimmed >= 600L || (visibleMsIfTrimmed >= MIN_CUE_MS && overlapMs <= 1500L)) {
+          adjusted[i] = curr.copy(endMs = next.startMs)
+        } else if (next.endMs - curr.endMs >= 300L && curr.endMs - curr.startMs >= MIN_CUE_MS) {
+          adjusted[i + 1] = next.copy(startMs = curr.endMs)
+        }
+      }
+    }
+    return adjusted
+  }
+
+  // ---------------------------------------------------------------------------
+  // Atomic Writers: Standard Pure .srt + Method A Flowing [双语].ass
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Writes clean, pure UTF-8 standard `.srt` cues with zero formatting/positioning hacks.
+   * Uses atomic write-then-rename so interrupted runs never poison cache files.
+   */
+  fun writeSrtFile(cues: List<PlainSubtitleCue>, outFile: File): Boolean {
+    val validCues = cues.filter { it.text.isNotBlank() }
+    if (validCues.isEmpty()) return false
+    outFile.parentFile?.mkdirs()
+    val tmpFile = File(outFile.parentFile, "${outFile.name}.tmp")
+    return try {
+      BufferedWriter(OutputStreamWriter(FileOutputStream(tmpFile), Charsets.UTF_8)).use { w ->
+        var idx = 1
+        for (cue in validCues) {
+          val safeEnd = max(cue.endMs, cue.startMs + MIN_CUE_MS)
+          w.write(idx.toString())
+          w.newLine()
+          w.write("${msToSrtTime(cue.startMs)} --> ${msToSrtTime(safeEnd)}")
+          w.newLine()
+          w.write(cue.text)
+          w.newLine()
+          w.newLine()
+          idx++
+        }
+      }
+      if (outFile.exists()) outFile.delete()
+      tmpFile.renameTo(outFile) || run {
+        tmpFile.copyTo(outFile, overwrite = true)
+        tmpFile.delete()
+        true
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed writing SRT file ${outFile.name}", e)
+      runCatching { tmpFile.delete() }
+      false
+    }
   }
 
   /**
-   * Intelligently aligns and unifies timestamps for adjacent/overlapping CJK & Latin cues.
-   * If a subtitle file specifies Chinese and English dialogues in separate cues with
-   * slight timestamp discrepancies (e.g. 100-1200ms offset), this merges them into a
-   * single synchronized cue with interval [min(Start), max(End)].
+   * Writes unified flowing bilingual `.ass` (`Method A`):
+   * - `Default` (Primary / Top) and `Secondary` (Bottom) are connected in one bottom-anchored paragraph:
+   *   `Primary\N{\rSpacer}\h\N{\rSecondary}Secondary`.
+   * - Whenever Secondary wraps onto 2+ lines, `libass` lifts Primary upward automatically with ZERO overlap!
    */
-  private fun alignCues(rawCues: List<CueItem>): List<CueItem> {
-    if (rawCues.isEmpty()) return emptyList()
+  fun writeBilingualAssFile(
+    cues: List<BilingualSubtitleCue>,
+    outFile: File,
+    preferences: SubtitlesPreferences? = null,
+  ): Boolean {
+    val validCues = cues.filter { it.primaryText.isNotBlank() || it.secondaryText.isNotBlank() }
+    if (validCues.isEmpty()) return false
+    outFile.parentFile?.mkdirs()
+    val tmpFile = File(outFile.parentFile, "${outFile.name}.tmp")
 
-    val sorted = rawCues.sortedWith(compareBy({ it.startMs }, { it.endMs }))
-    val result = mutableListOf<CueItem>()
-    val used = BooleanArray(sorted.size)
+    val primary = preferences?.primaryProfileFor(SubtitleMode.Multi)
+    val secondary = preferences?.secondaryProfile()
+    val multiPos = preferences?.multiSubPos?.get() ?: 96.0f
+    val marginV = posPercentToAssMarginV(multiPos)
+    val gapSize = (preferences?.multiBilingualGap?.get() ?: 6).coerceIn(1, 50)
 
-    for (i in sorted.indices) {
-      if (used[i]) continue
-      val cur = sorted[i]
+    return try {
+      BufferedWriter(OutputStreamWriter(FileOutputStream(tmpFile), Charsets.UTF_8)).use { w ->
+        w.write(buildBilingualAssHeader(primary, secondary, marginV, gapSize))
+        for (cue in validCues) {
+          val safeEnd = max(cue.endMs, cue.startMs + MIN_CUE_MS)
+          val startAss = msToAssTime(cue.startMs)
+          val endAss = msToAssTime(safeEnd)
+          val hasPri = cue.primaryText.isNotBlank()
+          val hasSec = cue.secondaryText.isNotBlank()
 
-      // If cue already has both primary and secondary, keep as is
-      if (cur.priParts.isNotEmpty() && cur.secParts.isNotEmpty()) {
-        result.add(cur)
-        used[i] = true
-        continue
-      }
-
-      val isCurPriOnly = cur.priParts.isNotEmpty() && cur.secParts.isEmpty()
-      val isCurSecOnly = cur.secParts.isNotEmpty() && cur.priParts.isEmpty()
-
-      if (!isCurPriOnly && !isCurSecOnly) {
-        used[i] = true
-        continue
-      }
-
-      var bestMatchIdx = -1
-      var bestMatchOverlap = -1L
-
-      val maxLookahead = minOf(sorted.size - 1, i + 15)
-      for (j in (i + 1)..maxLookahead) {
-        if (used[j]) continue
-        val cand = sorted[j]
-        if (cand.startMs - cur.startMs > 2500) break
-
-        val isCandOpposite = if (isCurPriOnly) {
-          cand.secParts.isNotEmpty() && cand.priParts.isEmpty()
-        } else {
-          cand.priParts.isNotEmpty() && cand.secParts.isEmpty()
-        }
-
-        if (isCandOpposite) {
-          val overlapStart = maxOf(cur.startMs, cand.startMs)
-          val overlapEnd = minOf(cur.endMs, cand.endMs)
-          val overlap = overlapEnd - overlapStart
-          val startDiff = Math.abs(cur.startMs - cand.startMs)
-          val endDiff = Math.abs(cur.endMs - cand.endMs)
-
-          if (overlap > 0 || (startDiff <= 1200 && endDiff <= 1500)) {
-            if (overlap > bestMatchOverlap) {
-              bestMatchOverlap = overlap
-              bestMatchIdx = j
+          when {
+            hasPri && hasSec -> {
+              val priEsc = escapeAssText(cue.primaryText)
+              val secEsc = escapeAssText(cue.secondaryText)
+              w.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priEsc\\N{\\rSpacer}\\h\\N{\\rSecondary}$secEsc")
+            }
+            hasPri -> {
+              val priEsc = escapeAssText(cue.primaryText)
+              w.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priEsc")
+            }
+            else -> {
+              val secEsc = escapeAssText(cue.secondaryText)
+              w.write("Dialogue: 0,$startAss,$endAss,Secondary,,0,0,0,,$secEsc")
             }
           }
+          w.newLine()
         }
       }
+      if (outFile.exists()) outFile.delete()
+      tmpFile.renameTo(outFile) || run {
+        tmpFile.copyTo(outFile, overwrite = true)
+        tmpFile.delete()
+        true
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed writing ASS file ${outFile.name}", e)
+      runCatching { tmpFile.delete() }
+      false
+    }
+  }
 
-      if (bestMatchIdx != -1) {
-        val match = sorted[bestMatchIdx]
-        used[i] = true
-        used[bestMatchIdx] = true
+  private fun escapeAssText(text: String): String =
+    text
+      .replace("\r\n", "\n")
+      .replace('\r', '\n')
+      .replace("\n", "\\N")
 
-        val unifiedStart = minOf(cur.startMs, match.startMs)
-        val unifiedEnd = maxOf(cur.endMs, match.endMs)
-        val mergedPri = if (isCurPriOnly) cur.priParts else match.priParts
-        val mergedSec = if (isCurSecOnly) cur.secParts else match.secParts
+  // ---------------------------------------------------------------------------
+  // Pure Style Builders & Runtime MPV Mode Application
+  // ---------------------------------------------------------------------------
 
-        result.add(
-          CueItem(
-            startMs = unifiedStart,
-            endMs = unifiedEnd,
-            priParts = mergedPri,
-            secParts = mergedSec,
-          )
-        )
+  fun posPercentToAssMarginV(posPercent: Float): Int =
+    ((100f - posPercent.coerceIn(0f, 100f)) / 100f * 1080f).roundToInt().coerceIn(0, 1080)
+
+  private fun buildBilingualAssHeader(
+    primary: SubtitlesPreferences.SubtitleStyleProfile?,
+    secondary: SubtitlesPreferences.SubtitleStyleProfile?,
+    marginV: Int,
+    gapSize: Int,
+  ): String {
+    val defaultLine = buildAssStyleDefinition("Default", primary, defaultSize = 55, marginV = marginV)
+    val secondaryLine = buildAssStyleDefinition("Secondary", secondary, defaultSize = 44, marginV = marginV)
+    val spacerLine = "Style: Spacer,sans-serif,$gapSize,&HFF000000,&HFF000000,&HFF000000,&HFF000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,0,1"
+
+    return buildString {
+      appendLine("[Script Info]")
+      appendLine("ScriptType: v4.00+")
+      appendLine("PlayResX: 1920")
+      appendLine("PlayResY: 1080")
+      appendLine("WrapStyle: 0")
+      appendLine("ScaledBorderAndShadow: yes")
+      appendLine()
+      appendLine("[V4+ Styles]")
+      appendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+      appendLine(defaultLine)
+      appendLine(secondaryLine)
+      appendLine(spacerLine)
+      appendLine()
+      appendLine("[Events]")
+      appendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+    }
+  }
+
+  private fun buildAssStyleDefinition(
+    name: String,
+    profile: SubtitlesPreferences.SubtitleStyleProfile?,
+    defaultSize: Int,
+    marginV: Int,
+  ): String {
+    val style = extractStyleSnapshot(profile, defaultSize, marginV)
+    return "Style: $name,${style.fontName},${style.fontSize},${style.primaryAss},${style.primaryAss},${style.outlineAss},${style.backAss},${style.boldAss},${style.italicAss},0,0,100,100,0,0,${style.borderStyleAss},${style.outlineWidth},${style.shadow},${style.alignmentAss},20,20,$marginV,1"
+  }
+
+  private data class AssStyleSnapshot(
+    val fontName: String,
+    val fontSize: Int,
+    val primaryAss: String,
+    val outlineAss: String,
+    val backAss: String,
+    val boldAss: Int,
+    val italicAss: Int,
+    val borderStyleAss: Int,
+    val outlineWidth: String,
+    val shadow: Int,
+    val alignmentAss: Int,
+    val marginV: Int,
+  )
+
+  private fun extractStyleSnapshot(
+    profile: SubtitlesPreferences.SubtitleStyleProfile?,
+    defaultSize: Int,
+    marginV: Int,
+  ): AssStyleSnapshot {
+    val fontName = profile?.font?.get()?.takeIf { it.isNotBlank() } ?: "sans-serif"
+    val fontSize = profile?.fontSize?.get() ?: defaultSize
+    val textCol = profile?.textColor?.get() ?: Color.White.toArgb()
+    val borderCol = profile?.borderColor?.get() ?: Color.Black.toArgb()
+    val bgCol = profile?.backgroundColor?.get() ?: Color.Transparent.toArgb()
+    val bStyle = profile?.borderStyle?.get() ?: SubtitlesBorderStyle.OutlineAndShadow
+    val borderSize = profile?.borderSize?.get() ?: 3.0f
+    val shadow = profile?.shadowOffset?.get() ?: 0
+    val bold = profile?.bold?.get() ?: false
+    val italic = profile?.italic?.get() ?: false
+    val justify = profile?.justification?.get() ?: SubtitleJustification.Auto
+
+    val borderStyleAss = if (bStyle == SubtitlesBorderStyle.OpaqueBox) 3 else 1
+    // In libass, BorderStyle=3 uses OutlineColour as the opaque box background.
+    val effectiveOutlineCol = when {
+      bStyle == SubtitlesBorderStyle.OpaqueBox && (bgCol ushr 24) > 0 -> bgCol
+      else -> borderCol
+    }
+    // Keep shadow visible in BorderStyle=1 when user enables shadowOffset while bgCol is transparent.
+    val effectiveBackCol = when {
+      bStyle == SubtitlesBorderStyle.OpaqueBox -> borderCol
+      (bgCol ushr 24) == 0 && shadow > 0 -> 0x80000000.toInt()
+      else -> bgCol
+    }
+    val alignmentAss = when (justify) {
+      SubtitleJustification.Left -> 1
+      SubtitleJustification.Right -> 3
+      SubtitleJustification.Center, SubtitleJustification.Auto -> 2
+    }
+
+    return AssStyleSnapshot(
+      fontName = fontName.replace(",", " "),
+      fontSize = fontSize,
+      primaryAss = textCol.toAssColorString(),
+      outlineAss = effectiveOutlineCol.toAssColorString(),
+      backAss = effectiveBackCol.toAssColorString(),
+      boldAss = if (bold) -1 else 0,
+      italicAss = if (italic) -1 else 0,
+      borderStyleAss = borderStyleAss,
+      outlineWidth = String.format(Locale.US, "%.1f", borderSize),
+      shadow = shadow,
+      alignmentAss = alignmentAss,
+      marginV = marginV,
+    )
+  }
+
+  /**
+   * Builds the comma-separated `sub-ass-style-overrides` string for Dual mode, driving
+   * `Default`, `Secondary`, and `Spacer` completely from user preferences.
+   */
+  fun buildBilingualAssStyleOverrides(
+    primary: SubtitlesPreferences.SubtitleStyleProfile,
+    secondary: SubtitlesPreferences.SubtitleStyleProfile,
+    marginV: Int,
+    gapSize: Int,
+  ): String {
+    val priSnap = extractStyleSnapshot(primary, defaultSize = 55, marginV = marginV)
+    val secSnap = extractStyleSnapshot(secondary, defaultSize = 44, marginV = marginV)
+
+    val parts = mutableListOf<String>()
+    appendOverridesForStyle("Default", priSnap, includeAlignment = true, out = parts)
+    appendOverridesForStyle("Secondary", secSnap, includeAlignment = false, out = parts)
+    parts.add("Spacer.Fontname=sans-serif")
+    parts.add("Spacer.Fontsize=${gapSize.coerceIn(1, 50)}")
+    parts.add("Spacer.PrimaryColour=&HFF000000")
+    parts.add("Spacer.OutlineColour=&HFF000000")
+    parts.add("Spacer.BackColour=&HFF000000")
+    parts.add("Spacer.BorderStyle=1")
+    parts.add("Spacer.Outline=0")
+    parts.add("Spacer.Shadow=0")
+    return parts.joinToString(",")
+  }
+
+  private fun appendOverridesForStyle(
+    styleName: String,
+    s: AssStyleSnapshot,
+    includeAlignment: Boolean,
+    out: MutableList<String>,
+  ) {
+    out.add("$styleName.Fontname=${s.fontName}")
+    out.add("$styleName.Fontsize=${s.fontSize}")
+    out.add("$styleName.PrimaryColour=${s.primaryAss}")
+    out.add("$styleName.OutlineColour=${s.outlineAss}")
+    out.add("$styleName.BackColour=${s.backAss}")
+    out.add("$styleName.Bold=${s.boldAss}")
+    out.add("$styleName.Italic=${s.italicAss}")
+    out.add("$styleName.BorderStyle=${s.borderStyleAss}")
+    out.add("$styleName.Outline=${s.outlineWidth}")
+    out.add("$styleName.Shadow=${s.shadow}")
+    out.add("$styleName.MarginV=${s.marginV}")
+    if (includeAlignment) {
+      out.add("$styleName.Alignment=${s.alignmentAss}")
+    }
+  }
+
+  /**
+   * Computes all MPV subtitle options for [mode] as a uniform list so both initial
+   * `MPVLib.setOptionString` and runtime `MPVLib.setPropertyString` share one source of truth.
+   */
+  fun buildMpvSubtitleOptions(
+    preferences: SubtitlesPreferences,
+    mode: SubtitleMode = preferences.subtitleMode.get(),
+    activeTrackTitle: String? = null,
+  ): List<Pair<String, String>> {
+    val primary = preferences.primaryProfileFor(mode)
+    val layout = preferences.layoutProfileFor(mode)
+    val secondary = preferences.secondaryProfile()
+
+    val scaleByWin = if (layout.scaleByWindow.get()) "yes" else "no"
+    val borderStyle = primary.borderStyle.get()
+    val effectiveBg = primary.backgroundColor.get()
+
+    val isSynthesizedBilingualActive =
+      mode == SubtitleMode.Multi && (activeTrackTitle == null || activeTrackTitle.startsWith("[双语]"))
+
+    val assOverride =
+      if (isSynthesizedBilingualActive) {
+        "scale"
       } else {
-        used[i] = true
-        result.add(cur)
-      }
-    }
-
-    return result.sortedWith(compareBy({ it.startMs }, { it.endMs }))
-  }
-
-  private fun writeAlignedCues(
-    cues: List<CueItem>,
-    priWriter: BufferedWriter,
-    secWriter: BufferedWriter,
-    biWriter: BufferedWriter,
-  ) {
-    for (cue in cues) {
-      val startAss = msToAssTime(cue.startMs)
-      val endAss = msToAssTime(cue.endMs)
-
-      val priCleanList = cue.priParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
-      val secCleanList = cue.secParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
-
-      // Merge intra-language multiple lines into a single clean line per language
-      val priText = priCleanList.joinToString(" ")
-      val cleanedSec = secCleanList.joinToString(" ")
-
-      // 1. Primary ASS dialogue (pure Chinese)
-      if (priText.isNotEmpty()) {
-        priWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priText")
-        priWriter.newLine()
+        layout.overrideAssSubs.get().value
       }
 
-      // 2. Secondary ASS dialogue (pure English)
-      if (cleanedSec.isNotEmpty()) {
-        secWriter.write("Dialogue: 0,$startAss,$endAss,Secondary,,0,0,0,,$cleanedSec")
-        secWriter.newLine()
+    val assStyleOverrides =
+      if (mode == SubtitleMode.Multi) {
+        val marginV = posPercentToAssMarginV(layout.subPos.get())
+        val gap = preferences.multiBilingualGap.get().coerceIn(1, 50)
+        buildBilingualAssStyleOverrides(primary, secondary, marginV, gap)
+      } else {
+        ""
       }
 
-      // 3. Unified bilingual ASS dialogue (Solution 1: flowing layout, zero overlap)
-      if (priText.isNotEmpty() && cleanedSec.isNotEmpty()) {
-        biWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priText\\N{\\rSecondary}$cleanedSec")
-        biWriter.newLine()
-      } else if (priText.isNotEmpty()) {
-        biWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,0,,$priText")
-        biWriter.newLine()
-      } else if (cleanedSec.isNotEmpty()) {
-        biWriter.write("Dialogue: 0,$startAss,$endAss,Secondary,,0,0,0,,$cleanedSec")
-        biWriter.newLine()
-      }
-    }
-  }
+    val secScaleRatio =
+      (secondary.fontSize.get().toFloat() / primary.fontSize.get().coerceAtLeast(1).toFloat())
+        .coerceIn(0.4f, 1.5f) * preferences.secondarySubScale.get()
 
-  fun parseTimeToMs(timeStr: String): Long? {
-    val clean = timeStr.trim()
-    val parts = clean.split(":")
-    if (parts.size != 3) return null
-    val h = parts[0].toLongOrNull() ?: return null
-    val m = parts[1].toLongOrNull() ?: return null
-    val secParts = parts[2].split(",", ".")
-    val s = secParts.getOrNull(0)?.toLongOrNull() ?: return null
-    val subStr = secParts.getOrNull(1) ?: "0"
-    val ms = when (subStr.length) {
-      0 -> 0L
-      1 -> (subStr.toLongOrNull() ?: 0L) * 100
-      2 -> (subStr.toLongOrNull() ?: 0L) * 10
-      else -> subStr.take(3).toLongOrNull() ?: 0L
-    }
-    return h * 3600000L + m * 60000L + s * 1000L + ms
-  }
+    val borderSizeStr = String.format(Locale.US, "%.2f", primary.borderSize.get())
 
-  fun msToAssTime(ms: Long): String {
-    val safeMs = ms.coerceAtLeast(0)
-    val cs = (safeMs % 1000) / 10
-    val totalSec = safeMs / 1000
-    val s = totalSec % 60
-    val totalMin = totalSec / 60
-    val m = totalMin % 60
-    val h = totalMin / 60
-    return String.format(Locale.US, "%d:%02d:%02d.%02d", h, m, s, cs)
-  }
-
-  fun srtTimeToAss(srtTime: String): String {
-    val ms = parseTimeToMs(srtTime) ?: return srtTime
-    return msToAssTime(ms)
-  }
-
-  private fun writePrimaryAssHeader(
-    writer: BufferedWriter,
-    baseName: String,
-    playResX: Int = 1920,
-    playResY: Int = 1080,
-  ) {
-    writer.write("[Script Info]")
-    writer.newLine()
-    writer.write("Title: [中] $baseName")
-    writer.newLine()
-    writer.write("ScriptType: v4.00+")
-    writer.newLine()
-    writer.write("WrapStyle: 0")
-    writer.newLine()
-    writer.write("ScaledBorderAndShadow: yes")
-    writer.newLine()
-    writer.write("YCbCr Matrix: None")
-    writer.newLine()
-    writer.write("PlayResX: $playResX")
-    writer.newLine()
-    writer.write("PlayResY: $playResY")
-    writer.newLine()
-    writer.newLine()
-    writer.write("[V4+ Styles]")
-    writer.newLine()
-    writer.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-    writer.newLine()
-    writer.write("Style: Default,sans-serif,55,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,20,1")
-    writer.newLine()
-    writer.newLine()
-    writer.write("[Events]")
-    writer.newLine()
-    writer.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
-    writer.newLine()
+    return listOf(
+      "sub-font" to primary.font.get(),
+      "sub-font-size" to primary.fontSize.get().toString(),
+      "sub-bold" to if (primary.bold.get()) "yes" else "no",
+      "sub-italic" to if (primary.italic.get()) "yes" else "no",
+      "sub-justify" to primary.justification.get().value,
+      "sub-border-style" to borderStyle.value,
+      "sub-border-size" to borderSizeStr,
+      "sub-outline-size" to borderSizeStr,
+      "sub-shadow-offset" to primary.shadowOffset.get().toString(),
+      "sub-color" to primary.textColor.get().toMpvColorHex(),
+      "sub-back-color" to effectiveBg.toMpvColorHex(),
+      "sub-border-color" to primary.borderColor.get().toMpvColorHex(),
+      "sub-scale" to String.format(Locale.US, "%.3f", layout.subScale.get()),
+      "sub-pos" to layout.subPos.get().roundToInt().coerceIn(0, 100).toString(),
+      "sub-line-spacing" to layout.subSpacing.get().toString(),
+      "sub-ass-line-spacing" to layout.subSpacing.get().toString(),
+      "sub-ass-justify" to if (assOverride == "force" || assOverride == "strip") "yes" else "no",
+      "sub-scale-by-window" to scaleByWin,
+      "sub-use-margins" to scaleByWin,
+      "sub-ass-scale-with-window" to scaleByWin,
+      "sub-ass-force-margins" to scaleByWin,
+      "sub-ass-override" to assOverride,
+      "secondary-sub-ass-override" to "scale",
+      "secondary-sub-pos" to layout.subPos.get().roundToInt().coerceIn(0, 100).toString(),
+      "secondary-sub-scale" to String.format(Locale.US, "%.3f", secScaleRatio),
+      "sub-ass-style-overrides" to assStyleOverrides,
+    )
   }
 
   /**
-   * Writes a standard ASS header containing a dedicated 'Secondary' style definition.
+   * Applies pre-init MPV options for the currently active subtitle mode.
    */
-  private fun writeSecondaryAssHeader(
-    writer: BufferedWriter,
-    baseName: String,
-    playResX: Int = 1920,
-    playResY: Int = 1080,
-  ) {
-    writer.write("[Script Info]")
-    writer.newLine()
-    writer.write("Title: [英] $baseName")
-    writer.newLine()
-    writer.write("ScriptType: v4.00+")
-    writer.newLine()
-    writer.write("WrapStyle: 0")
-    writer.newLine()
-    writer.write("ScaledBorderAndShadow: yes")
-    writer.newLine()
-    writer.write("YCbCr Matrix: None")
-    writer.newLine()
-    writer.write("PlayResX: $playResX")
-    writer.newLine()
-    writer.write("PlayResY: $playResY")
-    writer.newLine()
-    writer.newLine()
-    writer.write("[V4+ Styles]")
-    writer.newLine()
-    writer.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-    writer.newLine()
-    writer.write("Style: Secondary,sans-serif,45,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,20,1")
-    writer.newLine()
-    writer.newLine()
-    writer.write("[Events]")
-    writer.newLine()
-    writer.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
-    writer.newLine()
+  fun applyStartupSubtitleOptions(preferences: SubtitlesPreferences, mode: SubtitleMode = preferences.subtitleMode.get()) {
+    for ((key, value) in buildMpvSubtitleOptions(preferences, mode = mode, activeTrackTitle = null)) {
+      runCatching { MPVLib.setOptionString(key, value) }
+    }
   }
 
   /**
-   * Writes a unified bilingual ASS header with both 'Default' (primary Chinese) and 'Secondary' (English) styles.
+   * Applies runtime MPV subtitle properties for [mode], cleanly isolating Single-language SRT/ASS
+   * rendering from Dual-language `[双语]` ASS rendering.
    */
-  private fun writeBilingualAssHeader(
-    writer: BufferedWriter,
-    baseName: String,
-    playResX: Int = 1920,
-    playResY: Int = 1080,
+  fun applySubtitlePreferencesForMode(
+    preferences: SubtitlesPreferences,
+    mode: SubtitleMode = preferences.subtitleMode.get(),
   ) {
-    writer.write("[Script Info]")
-    writer.newLine()
-    writer.write("Title: [双语] $baseName")
-    writer.newLine()
-    writer.write("ScriptType: v4.00+")
-    writer.newLine()
-    writer.write("WrapStyle: 0")
-    writer.newLine()
-    writer.write("ScaledBorderAndShadow: yes")
-    writer.newLine()
-    writer.write("YCbCr Matrix: None")
-    writer.newLine()
-    writer.write("PlayResX: $playResX")
-    writer.newLine()
-    writer.write("PlayResY: $playResY")
-    writer.newLine()
-    writer.newLine()
-    writer.write("[V4+ Styles]")
-    writer.newLine()
-    writer.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-    writer.newLine()
-    writer.write("Style: Default,sans-serif,55,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,20,1")
-    writer.newLine()
-    writer.write("Style: Secondary,sans-serif,45,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2.0,0,2,10,10,20,1")
-    writer.newLine()
-    writer.newLine()
-    writer.write("[Events]")
-    writer.newLine()
-    writer.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
-    writer.newLine()
+    val activeTitle = runCatching { MPVLib.getPropertyString("current-tracks/sub/title") }.getOrNull()
+    for ((key, value) in buildMpvSubtitleOptions(preferences, mode = mode, activeTrackTitle = activeTitle)) {
+      runCatching { MPVLib.setPropertyString(key, value) }
+    }
   }
 
-  private fun readTextWithAutoEncoding(bytes: ByteArray): String {
+  // ---------------------------------------------------------------------------
+  // Validation, Encoding, Time & Character Helpers
+  // ---------------------------------------------------------------------------
+
+  fun isValidSrtFile(file: File?): Boolean {
+    if (file == null || !file.exists() || file.length() < 12L) return false
+    return runCatching {
+      file.bufferedReader(Charsets.UTF_8).use { r ->
+        var checked = 0
+        while (checked < 30) {
+          val line = r.readLine() ?: break
+          if (line.contains("-->")) return true
+          checked++
+        }
+        false
+      }
+    }.getOrDefault(false)
+  }
+
+  fun isValidAssFile(file: File?): Boolean {
+    if (file == null || !file.exists() || file.length() < 64L) return false
+    return runCatching {
+      file.bufferedReader(Charsets.UTF_8).use { r ->
+        var checked = 0
+        while (checked < 60) {
+          val line = r.readLine() ?: break
+          if (line.startsWith("Dialogue:", ignoreCase = true)) return true
+          checked++
+        }
+        false
+      }
+    }.getOrDefault(false)
+  }
+
+  fun decodeSubtitleBytes(bytes: ByteArray): String {
+    if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
+      return String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+    }
     if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
       return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
     }
     if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
       return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
     }
-    if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
-      return String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
-    }
 
-    return try {
-      val decoder = Charsets.UTF_8.newDecoder()
-      decoder.onMalformedInput(CodingErrorAction.REPORT)
-      decoder.onUnmappableCharacter(CodingErrorAction.REPORT)
-      decoder.decode(ByteBuffer.wrap(bytes)).toString()
-    } catch (e: Exception) {
-      try {
-        String(bytes, Charset.forName("GB18030"))
-      } catch (e2: Exception) {
-        String(bytes, Charsets.UTF_8)
-      }
+    val utf8 = String(bytes, Charsets.UTF_8)
+    if (!utf8.contains('\uFFFD')) return utf8
+
+    val gbk = runCatching { Charset.forName("GB18030") }.getOrElse { Charset.forName("GBK") }
+    return String(bytes, gbk)
+  }
+
+  fun msToSrtTime(ms: Long): String {
+    val safe = max(0L, ms)
+    val h = safe / 3_600_000L
+    val m = (safe % 3_600_000L) / 60_000L
+    val s = (safe % 60_000L) / 1000L
+    val mmm = safe % 1000L
+    return String.format(Locale.US, "%02d:%02d:%02d,%03d", h, m, s, mmm)
+  }
+
+  fun msToAssTime(ms: Long): String {
+    val safe = max(0L, ms)
+    val h = safe / 3_600_000L
+    val m = (safe % 3_600_000L) / 60_000L
+    val s = (safe % 60_000L) / 1000L
+    val cs = (safe % 1000L) / 10L
+    return String.format(Locale.US, "%d:%02d:%02d.%02d", h, m, s, cs)
+  }
+
+  private fun parseSrtRegexTime(m: MatchResult, groupOffset: Int): Long {
+    val hasHour = !m.groupValues[groupOffset].isNullOrEmpty()
+    val h = if (hasHour) m.groupValues[groupOffset].trimEnd(':').toLongOrNull() ?: 0L else 0L
+    val min = m.groupValues[groupOffset + 1].toLongOrNull() ?: 0L
+    val sec = m.groupValues[groupOffset + 2].toLongOrNull() ?: 0L
+    val fracRaw = m.groupValues[groupOffset + 3]
+    val ms = when (fracRaw.length) {
+      1 -> (fracRaw.toLongOrNull() ?: 0L) * 100L
+      2 -> (fracRaw.toLongOrNull() ?: 0L) * 10L
+      else -> fracRaw.take(3).toLongOrNull() ?: 0L
     }
+    return ((h * 3600L) + (min * 60L) + sec) * 1000L + ms
+  }
+
+  private fun parseAssTime(timeStr: String): Long {
+    val m = ASS_TIME_REGEX.find(timeStr.trim()) ?: return -1L
+    val h = m.groupValues[1].toLongOrNull() ?: 0L
+    val min = m.groupValues[2].toLongOrNull() ?: 0L
+    val s = m.groupValues[3].toLongOrNull() ?: 0L
+    val frac = m.groupValues[4]
+    val ms = if (frac.length == 2) (frac.toLongOrNull() ?: 0L) * 10L else (frac.take(3).toLongOrNull() ?: 0L)
+    return ((h * 3600L) + (min * 60L) + s) * 1000L + ms
+  }
+
+  fun containsCjk(text: String): Boolean = text.any { isCjkChar(it) }
+
+  private fun containsLetter(text: String): Boolean = text.any { it.isLetter() }
+
+  private fun isCjkChar(c: Char): Boolean {
+    val code = c.code
+    return code in 0x4E00..0x9FFF ||
+      code in 0x3400..0x4DBF ||
+      code in 0x3040..0x30FF ||
+      code in 0xAC00..0xD7AF
+  }
+
+  private fun isCjkOrCjkPunct(c: Char): Boolean {
+    if (isCjkChar(c)) return true
+    val code = c.code
+    return code in 0x3000..0x303F || code in 0xFF00..0xFFEF
   }
 }
 
 /**
- * Converts an Android ARGB Int color into ASS/SSA color format (&HAABBGGRR).
- * Note: ASS uses inverse alpha (00 = fully opaque, FF = fully transparent)
- * and BGR channel ordering.
+ * Formats an Android/Compose ARGB Int color (`0xAARRGGBB`) into `#AARRGGBB` for mpv options.
+ */
+fun Int.toMpvColorHex(): String = String.format(Locale.US, "#%08X", this)
+
+/**
+ * Converts an Android/Compose ARGB Int color (`0xAARRGGBB`) to ASS hex (`&HAABBGGRR`).
+ * Note ASS alpha is inverted compared to Android alpha: `00` = opaque, `FF` = transparent.
  */
 fun Int.toAssColorString(): String {
-  val a = (this shr 24) and 0xFF
-  val r = (this shr 16) and 0xFF
-  val g = (this shr 8) and 0xFF
+  val a = (this ushr 24) and 0xFF
+  val r = (this ushr 16) and 0xFF
+  val g = (this ushr 8) and 0xFF
   val b = this and 0xFF
   val assAlpha = 255 - a
   return String.format(Locale.US, "&H%02X%02X%02X%02X", assAlpha, b, g, r)
 }
 
 /**
- * Applies libass style overrides to mpv via the `sub-ass-style-overrides` property,
- * targeting the dedicated `Secondary` style defined in bilingual subtitles generated by
- * [BilingualSubtitleParser].
- *
- * libmpv does not support native `secondary-sub-font`, `secondary-sub-font-size`,
- * `secondary-sub-color`, etc. (which fail silently). Instead, we configure mpv with
- * `secondary-sub-ass-override=scale` and pass `Style.Property=Value` overrides into
- * mpv's native `sub-ass-style-overrides` option.
+ * Legacy helper alias maintained so any callers migrating from earlier commits invoke
+ * [BilingualSubtitleParser.applySubtitlePreferencesForMode].
  */
 fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
-  val isBold = preferences.secondaryBold.get()
-  val isItalic = preferences.secondaryItalic.get()
-  val font = preferences.secondaryFont.get()
-  val fontSize = preferences.secondaryFontSize.get()
-  val subScale = preferences.secondarySubScale.get()
-  val borderStyle = preferences.secondaryBorderStyle.get()
-  val borderSize = preferences.secondaryBorderSize.get()
-  val shadowOffset = preferences.secondaryShadowOffset.get()
-  val textColor = preferences.secondaryTextColor.get()
-  val borderColor = preferences.secondaryBorderColor.get()
-  val bgColor = preferences.secondaryBackgroundColor.get()
-  val justification = preferences.secondaryJustification.get()
-
-  // Calculate effective font size taking scale into account
-  val effectiveFontSize = (fontSize * subScale).roundToInt().coerceAtLeast(1)
-
-  // In ASS: 1 = bottom-left, 2 = bottom-center, 3 = bottom-right
-  val alignment = when (justification) {
-    SubtitleJustification.Left -> 1
-    SubtitleJustification.Right -> 3
-    else -> 2
-  }
-
-  // BorderStyle: 1 = outline + shadow, 3 = opaque background box
-  val assBorderStyle = if (borderStyle == SubtitlesBorderStyle.OpaqueBox) 3 else 1
-  val assFont = if (font.isNotBlank() && font != "Default") font else "sans-serif"
-
-  // Update vertical position based on line spacing relative to primary sub position
-  val curSubPos = preferences.subPos.get()
-  val spacing = preferences.secondarySubSpacing.get()
-  val secPos = (curSubPos - spacing).coerceIn(0f, 150f)
-  preferences.secondarySubPos.set(secPos)
-
-  // In mpv, secondary-sub-pos is an integer percentage (0-150) of screen height.
-  // To provide truly continuous 0.1-level precision on screen, we split secPos into:
-  // 1) Integer baseline: secPosInt = secPos.roundToInt()
-  // 2) Fractional difference: diff = secPos - secPosInt (-0.5 to +0.5)
-  // In 1080p ASS, 1% of screen height is ~10.8 pixels.
-  // For bottom-aligned ASS subtitles (Alignment 2), higher MarginV moves text UP,
-  // while higher sub-pos moves text DOWN.
-  // Therefore, if diff > 0 (secPos > secPosInt, text should move lower), MarginV decreases.
-  val secPosInt = secPos.roundToInt()
-  val diff = secPos - secPosInt.toFloat()
-  val pixelOffset = -(diff * 10.8f).roundToInt()
-  val baseMarginV = 20
-  val effectiveMarginV = (baseMarginV + pixelOffset).coerceAtLeast(0)
-
-  val overrides = listOf(
-    "Secondary.Fontname=$assFont",
-    "Secondary.Fontsize=$effectiveFontSize",
-    "Secondary.PrimaryColour=${textColor.toAssColorString()}",
-    "Secondary.OutlineColour=${borderColor.toAssColorString()}",
-    "Secondary.BackColour=${bgColor.toAssColorString()}",
-    "Secondary.Bold=${if (isBold) 1 else 0}",
-    "Secondary.Italic=${if (isItalic) 1 else 0}",
-    "Secondary.Outline=$borderSize",
-    "Secondary.Shadow=$shadowOffset",
-    "Secondary.BorderStyle=$assBorderStyle",
-    "Secondary.Alignment=$alignment",
-    "Secondary.MarginV=$effectiveMarginV",
-  ).joinToString(",")
-
-  MPVLib.setPropertyString("sub-ass-style-overrides", overrides)
-  MPVLib.setPropertyString("secondary-sub-ass-override", "scale")
-  MPVLib.setPropertyInt("secondary-sub-pos", secPosInt)
-  val scaleByWindow = preferences.scaleByWindow.get()
-  val scaleValue = if (scaleByWindow) "yes" else "no"
-  MPVLib.setPropertyString("sub-ass-scale-with-window", scaleValue)
-  MPVLib.setPropertyString("sub-ass-force-margins", scaleValue)
-
-  // Calculate dynamic secondary-sub-scale ratio so any secondary track (including plain text and embedded subtitles)
-  // accurately reflects user's secondary font size preferences instead of blowing up to full 720p base size
-  val priFontSize = preferences.fontSize.get().coerceAtLeast(1)
-  val effectiveScaleRatio = (fontSize.toFloat() / priFontSize.toFloat()) * subScale
-  MPVLib.setPropertyFloat("secondary-sub-scale", effectiveScaleRatio)
-
-  // Safely forward secondary-sub-* properties supported by newer mpv builds
-  runCatching { MPVLib.setPropertyString("secondary-sub-font", assFont) }
-  runCatching { MPVLib.setPropertyString("secondary-sub-color", textColor.toAssColorString()) }
-  runCatching { MPVLib.setPropertyString("secondary-sub-border-color", borderColor.toAssColorString()) }
-  runCatching { MPVLib.setPropertyFloat("secondary-sub-border-size", borderSize) }
-  runCatching { MPVLib.setPropertyBoolean("secondary-sub-bold", isBold) }
-  runCatching { MPVLib.setPropertyBoolean("secondary-sub-italic", isItalic) }
+  BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences)
 }

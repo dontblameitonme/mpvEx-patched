@@ -3,6 +3,7 @@ package app.marlboroadvance.mpvex.utils.media
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.repository.NetworkRepository
 import app.marlboroadvance.mpvex.ui.browser.networkstreaming.proxy.NetworkStreamingProxy
@@ -45,37 +46,41 @@ object SubtitleOps : KoinComponent {
     videoFilePath: String,
     videoFileName: String,
     networkConnectionId: Long = -1L,
-  ) = withContext(Dispatchers.IO) {
+    autoSelect: Boolean = true,
+  ): Boolean = withContext(Dispatchers.IO) {
     try {
       // Skip file descriptor URIs (these don't have a parent directory concept)
-      if (videoFilePath.startsWith("fd://")) return@withContext
+      if (videoFilePath.startsWith("fd://")) return@withContext false
 
-      // For content:// URIs, we can't autoload (no access to parent directory)
-      if (videoFilePath.startsWith("content://")) return@withContext
+      // Resolve local / content:// MKV subtitles seamlessly instead of bailing out early.
 
       // Check if this is a network file with connection ID (SMB/FTP/WebDAV via proxy)
       if (networkConnectionId != -1L) {
         // For network files, scan the directory using network client
         autoloadNetworkFileSubtitles(videoFilePath, videoFileName, networkConnectionId)
-        return@withContext
+        return@withContext false
       }
 
       // Check if this is a network stream (http, https, ftp, ftps, smb, webdav, etc.)
-      val isNetworkStream = videoFilePath.matches(Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://.*"))
+      val isNetworkStream =
+        !videoFilePath.startsWith("content://") &&
+          videoFilePath.matches(Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://.*"))
 
       if (isNetworkStream) {
         if (shouldSkipNetworkSubtitleAutoload(videoFilePath, videoFileName)) {
           Log.d(TAG, "Skipping network subtitle autoload for: $videoFilePath")
-          return@withContext
+          return@withContext false
         }
         // For network streams, try to load subtitles with common extensions
         autoloadNetworkSubtitles(videoFilePath, videoFileName)
+        false
       } else {
-        // For local files, scan the directory
-        autoloadLocalSubtitles(videoFilePath, videoFileName)
+        // For local files and content:// URIs, scan directory / extract embedded MKV subtitles
+        autoloadLocalSubtitles(videoFilePath, videoFileName, autoSelect)
       }
     } catch (e: Exception) {
       Log.e(TAG, "Error loading subtitles", e)
+      false
     }
   }
 
@@ -191,9 +196,10 @@ object SubtitleOps : KoinComponent {
   private suspend fun autoloadLocalSubtitles(
     videoFilePath: String,
     videoFileName: String,
-  ) {
-    var videoFile = File(videoFilePath)
-    var videoDirectory = videoFile.parentFile
+    autoSelect: Boolean = true,
+  ): Boolean {
+    var videoFile: File? = if (videoFilePath.startsWith("content://")) null else File(videoFilePath)
+    var videoDirectory = videoFile?.parentFile
     if (videoDirectory == null && videoFilePath.startsWith("content://")) {
       val real = runCatching { Uri.parse(videoFilePath).getRealFilePath(context) }.getOrNull()
       if (real != null) {
@@ -201,11 +207,10 @@ object SubtitleOps : KoinComponent {
         videoDirectory = videoFile.parentFile
       }
     }
-    if (videoDirectory == null) return
-    val baseName = videoFileName.substringBeforeLast('.')
 
+    val baseName = videoFileName.substringBeforeLast('.')
     val subtitles =
-      videoDirectory.listFiles()?.filter { file ->
+      videoDirectory?.listFiles()?.filter { file ->
         file.isFile &&
           isSubtitleFile(file.name) &&
           isMatchingSubtitle(baseName, file.nameWithoutExtension)
@@ -214,115 +219,250 @@ object SubtitleOps : KoinComponent {
         var score = 0
         if (nameLower.startsWith(baseName.lowercase(Locale.ROOT))) score += 10
         if (nameLower.contains("双语") || nameLower.contains("bilingual") || nameLower.contains("merged") ||
-            nameLower.contains("chn.eng") || nameLower.contains("chs&eng") || nameLower.contains("chs.eng")) {
+          nameLower.contains("chn.eng") || nameLower.contains("chs&eng") || nameLower.contains("chs.eng")
+        ) {
           score += 20
         }
         score
       }) ?: emptyList()
 
     if (subtitles.isNotEmpty()) {
-      // Run subtitle file splitting and track loading strictly on Dispatchers.IO to prevent UI thread freezes
-      withContext(Dispatchers.IO) {
-        var hasSelectedPrimary = false
+      return withContext(Dispatchers.IO) {
+        var hasActivatedPrimary = false
+        var upgradedPreprocessedActive = false
+        val plainChineseCandidates = mutableListOf<File>()
+        val plainEnglishCandidates = mutableListOf<File>()
+        var hasBilingualAlready = false
+
         subtitles.forEachIndexed { index, subtitle ->
           val isDefault = (index == 0)
           val splitResult = runCatching {
-            BilingualSubtitleParser.splitIfBilingual(subtitle, context)
+            BilingualSubtitleParser.splitIfBilingual(subtitle, context, subtitlesPreferences)
           }.getOrNull()
 
           if (splitResult != null) {
-            MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", splitResult.primaryTitle)
-            MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", splitResult.secondaryTitle)
-            MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
-            // Also keep original untouched subtitle as fallback
-            MPVLib.command("sub-add", subtitle.absolutePath, "auto", "[原版] ${subtitle.name}")
-
-            if (isDefault) {
-              val mode = subtitlesPreferences.subtitleMode.get()
-              var biId: Int? = null
-              var priId: Int? = null
-              var secId: Int? = null
-              for (attempt in 0 until 30) {
-                delay(50)
-                val count = MPVLib.getPropertyInt("track-list/count") ?: 0
-                for (i in 0 until count) {
-                  val type = MPVLib.getPropertyString("track-list/$i/type")
-                  if (type != "sub") continue
-                  val extPath = MPVLib.getPropertyString("track-list/$i/external-filename") ?: ""
-                  val title = MPVLib.getPropertyString("track-list/$i/title") ?: ""
-                  val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
-
-                  if (id > 0) {
-                    if (extPath == splitResult.primaryFile.absolutePath || title.startsWith("[中]")) {
-                      priId = id
-                    }
-                    if (extPath == splitResult.secondaryFile.absolutePath || title.startsWith("[英]")) {
-                      secId = id
-                    }
-                    if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
-                      biId = id
-                    }
-                  }
-                }
-                if (priId != null && secId != null) break
-              }
-
-              if (mode == app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) {
-                // In Multi Mode: activate dual tracks [中] + [英] with top priority
-                if (priId != null && secId != null) {
-                  MPVLib.setPropertyInt("sid", priId)
-                  MPVLib.setPropertyInt("secondary-sid", secId)
-                  val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
-                  val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
-                  MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
-                  MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
-                  applySecondarySubStyleOverrides(subtitlesPreferences)
-                  hasSelectedPrimary = true
-                  Log.d(TAG, "Autoload bilingual subtitle active: sid=$priId ([中]), secondary-sid=$secId ([英])")
-                } else if (biId != null) {
-                  MPVLib.setPropertyInt("sid", biId)
-                  MPVLib.setPropertyString("secondary-sid", "no")
-                  applySecondarySubStyleOverrides(subtitlesPreferences)
-                  hasSelectedPrimary = true
-                  Log.d(TAG, "Autoload bilingual subtitle active: sid=$biId ([双语])")
-                } else if (priId != null) {
-                  MPVLib.setPropertyInt("sid", priId)
-                  hasSelectedPrimary = true
-                }
-              } else {
-                // In Single Mode: activate pure primary track, secondary disabled
-                if (priId != null) {
-                  MPVLib.setPropertyInt("sid", priId)
-                  MPVLib.setPropertyString("secondary-sid", "no")
-                  hasSelectedPrimary = true
-                  Log.d(TAG, "Autoload single subtitle active: sid=$priId ([中])")
-                } else if (biId != null) {
-                  MPVLib.setPropertyInt("sid", biId)
-                  MPVLib.setPropertyString("secondary-sid", "no")
-                  hasSelectedPrimary = true
-                }
-              }
+            if (splitResult.bilingualFile != null) hasBilingualAlready = true
+            val shouldSelectNow = autoSelect && isDefault && !hasActivatedPrimary
+            val activated = addAndActivatePreprocessedResult(
+              splitResult = splitResult,
+              subtitlesPreferences = subtitlesPreferences,
+              autoSelect = shouldSelectNow,
+              fallbackPlainFile = subtitle,
+            )
+            if (activated && shouldSelectNow) {
+              hasActivatedPrimary = true
+              upgradedPreprocessedActive = true
             }
-            Log.d(TAG, "Autoloaded bilingual subtitle: ${subtitle.name} -> loaded bilingual, primary & secondary")
+            Log.d(
+              TAG,
+              "Autoloaded pre-processed subtitle: ${subtitle.name} (bilingual=${splitResult.isBilingual}, select=$shouldSelectNow)",
+            )
           } else {
-            // MPV command format: sub-add <url> [<flags> [<title>]]
-            // Use "select" for the first autoloaded subtitle so it is enabled by default
-            val flag = if (isDefault && !hasSelectedPrimary) "select" else "auto"
+            val lower = subtitle.nameWithoutExtension.lowercase(Locale.ROOT)
+            if (looksLikeChineseTag(lower)) plainChineseCandidates.add(subtitle)
+            else if (looksLikeEnglishTag(lower)) plainEnglishCandidates.add(subtitle)
+
+            val flag = if (autoSelect && isDefault && !hasActivatedPrimary) {
+              hasActivatedPrimary = true
+              "select"
+            } else {
+              "auto"
+            }
             MPVLib.command("sub-add", subtitle.absolutePath, flag, subtitle.name)
             Log.d(TAG, "Loaded local subtitle: ${subtitle.name} (flag=$flag)")
           }
         }
+
+        // If external directory contains separate zh + en subtitle files and no [双语] track exists,
+        // synthesize a bottom-anchored flowing [双语] track so Dual mode avoids static-pos collisions.
+        if (!hasBilingualAlready && plainChineseCandidates.isNotEmpty() && plainEnglishCandidates.isNotEmpty()) {
+          val pairedAss = BilingualSubtitleParser.mergeTwoFilesToBilingualAss(
+            primaryFile = plainChineseCandidates.first(),
+            secondaryFile = plainEnglishCandidates.first(),
+            baseName = baseName,
+            context = context,
+            preferences = subtitlesPreferences,
+          )
+          if (pairedAss != null) {
+            val pairedActivated = addAndActivatePreprocessedResult(
+              splitResult = BilingualSplitResult(
+                bilingualFile = pairedAss,
+                bilingualTitle = "[双语] $baseName",
+                isBilingual = true,
+              ),
+              subtitlesPreferences = subtitlesPreferences,
+              autoSelect = autoSelect && subtitlesPreferences.subtitleMode.get() == SubtitleMode.Multi,
+            )
+            if (pairedActivated && autoSelect && subtitlesPreferences.subtitleMode.get() == SubtitleMode.Multi) {
+              hasActivatedPrimary = true
+              upgradedPreprocessedActive = true
+            }
+          }
+        }
+        upgradedPreprocessedActive
       }
-    } else if (videoFile != null && videoFile.extension.equals("mkv", ignoreCase = true)) {
-      // Pre-process MKV embedded subtitles into standard external subtitle files
-      withContext(Dispatchers.IO) {
-        val splitResult = MkvSubtitleExtractor.extractAndLoadIfBilingual(videoFile, context, selectBilingual = true)
+    }
+
+    // No external subtitles matched: extract embedded text tracks from MKV (supports File and content:// URIs).
+    val isMkv =
+      videoFile?.extension?.equals("mkv", ignoreCase = true) == true ||
+        videoFileName.substringAfterLast('.', "").equals("mkv", ignoreCase = true) ||
+        videoFilePath.startsWith("content://")
+
+    if (isMkv) {
+      return withContext(Dispatchers.IO) {
+        val source = videoFile?.absolutePath ?: videoFilePath
+        val splitResult = MkvSubtitleExtractor.extractSubtitles(
+          videoSource = source,
+          context = context,
+          preferences = subtitlesPreferences,
+          displayNameHint = videoFileName,
+        )
         if (splitResult != null) {
-          Log.d(TAG, "Successfully pre-processed and loaded MKV embedded subtitles: ${splitResult.bilingualTitle}")
+          val activated = addAndActivatePreprocessedResult(
+            splitResult = splitResult,
+            subtitlesPreferences = subtitlesPreferences,
+            autoSelect = autoSelect,
+          )
+          Log.d(
+            TAG,
+            "Successfully pre-processed MKV subtitles: ${splitResult.bilingualTitle ?: splitResult.primaryTitle ?: splitResult.secondaryTitle}",
+          )
+          activated
+        } else {
+          false
         }
       }
     }
+    return false
   }
+
+  /**
+   * Registers preprocessed subtitle files from [splitResult] into mpv (skipping duplicates) and,
+   * when [autoSelect] is true, waits until mpv indexes them and selects the appropriate track for
+   * the active [SubtitleMode] (`[双语]` flowing ASS in Multi, or pure `.srt` in Single).
+   */
+  suspend fun addAndActivatePreprocessedResult(
+    splitResult: BilingualSplitResult,
+    subtitlesPreferences: SubtitlesPreferences,
+    autoSelect: Boolean,
+    fallbackPlainFile: File? = null,
+    fallbackTitle: String? = null,
+  ): Boolean {
+    val itemsToAdd = buildList {
+      splitResult.primaryFile?.takeIf { it.exists() && it.length() > 0L }?.let {
+        add(it to (splitResult.primaryTitle ?: it.nameWithoutExtension))
+      }
+      splitResult.secondaryFile?.takeIf { it.exists() && it.length() > 0L }?.let {
+        add(it to (splitResult.secondaryTitle ?: it.nameWithoutExtension))
+      }
+      splitResult.bilingualFile?.takeIf { it.exists() && it.length() > 0L }?.let {
+        add(it to (splitResult.bilingualTitle ?: it.nameWithoutExtension))
+      }
+      fallbackPlainFile?.takeIf { it.exists() && it.length() > 0L }?.let {
+        add(it to (fallbackTitle ?: "[原版] ${it.name}"))
+      }
+    }
+    if (itemsToAdd.isEmpty()) return false
+
+    val existingPaths = collectExistingExternalSubPaths()
+    for ((file, title) in itemsToAdd) {
+      if (file.absolutePath !in existingPaths) {
+        MPVLib.command("sub-add", file.absolutePath, "auto", title)
+      }
+    }
+
+    if (!autoSelect) return true
+
+    val expectedPaths = itemsToAdd
+      .filter { it.first != fallbackPlainFile }
+      .map { it.first.absolutePath }
+      .toSet()
+
+    var priId: Int? = null
+    var secId: Int? = null
+    var biId: Int? = null
+
+    for (attempt in 0 until 30) {
+      delay(50)
+      val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+      var seenExpected = 0
+      for (i in 0 until count) {
+        if (MPVLib.getPropertyString("track-list/$i/type") != "sub") continue
+        val extPath = MPVLib.getPropertyString("track-list/$i/external-filename") ?: continue
+        val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
+        if (id <= 0) continue
+
+        if (extPath in expectedPaths) seenExpected++
+        if (splitResult.primaryFile != null && extPath == splitResult.primaryFile.absolutePath) {
+          priId = id
+        } else if (splitResult.secondaryFile != null && extPath == splitResult.secondaryFile.absolutePath) {
+          secId = id
+        } else if (splitResult.bilingualFile != null && extPath == splitResult.bilingualFile.absolutePath) {
+          biId = id
+        }
+      }
+      if (seenExpected >= expectedPaths.size) break
+    }
+
+    val mode = subtitlesPreferences.subtitleMode.get()
+    var activated = false
+    if (mode == SubtitleMode.Multi) {
+      when {
+        biId != null -> {
+          MPVLib.setPropertyInt("sid", biId)
+          MPVLib.setPropertyString("secondary-sid", "no")
+          activated = true
+        }
+        priId != null && secId != null -> {
+          MPVLib.setPropertyInt("sid", priId)
+          MPVLib.setPropertyInt("secondary-sid", secId)
+          activated = true
+        }
+        priId != null || secId != null -> {
+          MPVLib.setPropertyInt("sid", (priId ?: secId)!!)
+          MPVLib.setPropertyString("secondary-sid", "no")
+          activated = true
+        }
+      }
+    } else {
+      val singleId = priId ?: secId ?: biId
+      if (singleId != null) {
+        MPVLib.setPropertyInt("sid", singleId)
+        MPVLib.setPropertyString("secondary-sid", "no")
+        activated = true
+      }
+    }
+
+    if (activated) {
+      val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
+      val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
+      MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
+      MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
+      BilingualSubtitleParser.applySubtitlePreferencesForMode(subtitlesPreferences, mode)
+    }
+    return activated
+  }
+
+  private fun collectExistingExternalSubPaths(): Set<String> {
+    val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+    val out = mutableSetOf<String>()
+    for (i in 0 until count) {
+      if (MPVLib.getPropertyString("track-list/$i/type") == "sub") {
+        MPVLib.getPropertyString("track-list/$i/external-filename")?.let { out.add(it) }
+      }
+    }
+    return out
+  }
+
+  private fun looksLikeChineseTag(lowerName: String): Boolean =
+    lowerName.contains(".chi") || lowerName.contains(".zh") || lowerName.contains(".chs") ||
+      lowerName.contains(".cht") || lowerName.contains("_zh") || lowerName.contains("中文") ||
+      lowerName.contains("简") || lowerName.contains("繁")
+
+  private fun looksLikeEnglishTag(lowerName: String): Boolean =
+    lowerName.contains(".eng") || lowerName.endsWith(".en") || lowerName.contains(".en.") ||
+      lowerName.contains("_en") || lowerName.contains("english") || lowerName.contains("英文")
 
   private suspend fun autoloadNetworkSubtitles(
     videoFilePath: String,
