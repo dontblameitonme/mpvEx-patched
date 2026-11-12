@@ -313,6 +313,92 @@ object SubtitleOps : KoinComponent {
           }
         }
       }
+    } else {
+      // No matching external subtitles found: for local MKV/WebM containers, extract the
+      // preferred-language + default embedded TEXT subtitle tracks into standard single-line
+      // SRT files and load them as external subtitles (original embedded tracks stay untouched).
+      val videoExt = videoFile.extension.lowercase(Locale.ROOT)
+      if (videoExt == "mkv" || videoExt == "webm") {
+        val extraction = runCatching {
+          MkvSubtitleExtractor.extractSubtitles(videoFile.absolutePath, context, subtitlesPreferences)
+        }.getOrNull()
+        if (extraction == null) {
+          Log.d(TAG, "No extractable embedded text subtitles for: ${videoFile.name}")
+          return
+        }
+
+        withContext(Dispatchers.IO) {
+          val base = extraction.baseName
+          extraction.chineseFile?.let {
+            MPVLib.command("sub-add", it.absolutePath, "auto", "[中] $base")
+          }
+          extraction.englishFile?.let {
+            MPVLib.command("sub-add", it.absolutePath, "auto", "[英] $base")
+          }
+          extraction.standardFile?.let {
+            MPVLib.command("sub-add", it.absolutePath, "auto", "[标准] $base")
+          }
+
+          var chiId: Int? = null
+          var engId: Int? = null
+          var stdId: Int? = null
+          for (attempt in 0 until 30) {
+            delay(50)
+            val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+            for (i in 0 until count) {
+              val type = MPVLib.getPropertyString("track-list/$i/type")
+              if (type != "sub") continue
+              val extPath = MPVLib.getPropertyString("track-list/$i/external-filename") ?: ""
+              val title = MPVLib.getPropertyString("track-list/$i/title") ?: ""
+              val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
+
+              if (id > 0) {
+                if (extPath == extraction.chineseFile?.absolutePath || title.startsWith("[中]")) {
+                  chiId = id
+                }
+                if (extPath == extraction.englishFile?.absolutePath || title.startsWith("[英]")) {
+                  engId = id
+                }
+                if (extPath == extraction.standardFile?.absolutePath || title.startsWith("[标准]")) {
+                  stdId = id
+                }
+              }
+            }
+            if (chiId != null && engId != null) break
+          }
+
+          val mode = subtitlesPreferences.subtitleMode.get()
+          if (mode == app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) {
+            // In Multi Mode: activate dual tracks [中] + [英] with top priority
+            if (chiId != null && engId != null) {
+              MPVLib.setPropertyInt("sid", chiId)
+              MPVLib.setPropertyInt("secondary-sid", engId)
+              val curDelay = MPVLib.getPropertyDouble("sub-delay") ?: 0.0
+              val curSpeed = MPVLib.getPropertyDouble("sub-speed") ?: 1.0
+              MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
+              MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
+              Log.d(TAG, "Autoload extracted MKV subtitles active: sid=$chiId ([中]), secondary-sid=$engId ([英])")
+            } else if (chiId != null) {
+              MPVLib.setPropertyInt("sid", chiId)
+              MPVLib.setPropertyString("secondary-sid", "no")
+              Log.d(TAG, "Autoload extracted MKV subtitles active: sid=$chiId ([中])")
+            } else if (engId != null) {
+              MPVLib.setPropertyInt("sid", engId)
+              MPVLib.setPropertyString("secondary-sid", "no")
+              Log.d(TAG, "Autoload extracted MKV subtitles active: sid=$engId ([英])")
+            }
+          } else {
+            // In Single Mode: activate pure primary track, secondary disabled
+            val sid = chiId ?: stdId ?: engId
+            if (sid != null) {
+              MPVLib.setPropertyInt("sid", sid)
+              MPVLib.setPropertyString("secondary-sid", "no")
+              Log.d(TAG, "Autoload extracted MKV subtitle active: sid=$sid")
+            }
+          }
+          applySecondarySubStyleOverrides(subtitlesPreferences)
+        }
+      }
     }
   }
 

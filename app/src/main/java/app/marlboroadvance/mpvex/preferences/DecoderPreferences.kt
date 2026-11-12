@@ -3,12 +3,14 @@ package app.marlboroadvance.mpvex.preferences
 import app.marlboroadvance.mpvex.preferences.preference.PreferenceStore
 import app.marlboroadvance.mpvex.preferences.preference.getEnum
 import app.marlboroadvance.mpvex.ui.player.Debanding
+import app.marlboroadvance.mpvex.ui.player.Decoder
 
 class DecoderPreferences(
   preferenceStore: PreferenceStore,
 ) {
   val profile = preferenceStore.getString("mpv_profile", "fast")
   val tryHWDecoding = preferenceStore.getBoolean("try_hw_dec", true)
+  val hwDecMode = preferenceStore.getEnum("hw_dec_mode", Decoder.HWPlus)
   val gpuNext = preferenceStore.getBoolean("gpu_next")
   val useVulkan = preferenceStore.getBoolean("use_vulkan", false)
   val useYUV420P = preferenceStore.getBoolean("use_yuv420p", false)

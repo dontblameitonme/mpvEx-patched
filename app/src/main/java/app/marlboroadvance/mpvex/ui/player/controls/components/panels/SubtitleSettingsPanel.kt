@@ -19,21 +19,28 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.constraintlayout.compose.ConstraintLayout
 import app.marlboroadvance.mpvex.R
+import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
+import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import app.marlboroadvance.mpvex.ui.player.controls.CARDS_MAX_WIDTH
 import app.marlboroadvance.mpvex.ui.player.controls.panelCardsColors
 import app.marlboroadvance.mpvex.ui.theme.spacing
+import org.koin.compose.koinInject
 
 @Composable
 fun SubtitleSettingsPanel(
   onDismissRequest: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val preferences = koinInject<SubtitlesPreferences>()
+  val activeMode by preferences.subtitleMode.collectAsState()
+
   DraggablePanel(
     modifier = modifier,
     header = {
@@ -60,9 +67,9 @@ fun SubtitleSettingsPanel(
         Modifier.padding(MaterialTheme.spacing.medium),
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.medium),
       ) {
-        SubtitleSettingsTypographyCard()
-        SubtitleSettingsColorsCard()
-        SubtitlesMiscellaneousCard()
+        SubtitleSettingsTypographyCard(mode = activeMode)
+        SubtitleSettingsColorsCard(mode = activeMode)
+        SubtitlesMiscellaneousCard(mode = activeMode)
         SecondarySubtitleSettingsCard()
       }
   }

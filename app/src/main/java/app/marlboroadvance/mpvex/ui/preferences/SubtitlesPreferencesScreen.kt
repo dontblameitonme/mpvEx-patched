@@ -240,10 +240,12 @@ object SubtitlesPreferencesScreen : Screen {
                 type = ListPreferenceType.DROPDOWN_MENU,
               )
 
-              val overrideAss by preferences.overrideAssSubs.collectAsState()
+              val layout = remember(subtitleMode) { preferences.layoutProfileFor(subtitleMode) }
+
+              val overrideAss by layout.overrideAssSubs.collectAsState()
               ListPreference(
                 value = overrideAss,
-                onValueChange = preferences.overrideAssSubs::set,
+                onValueChange = layout.overrideAssSubs::set,
                 values = SubAssOverride.entries,
                 valueToText = { AnnotatedString(context.getString(it.titleRes)) },
                 title = { Text(stringResource(R.string.player_sheets_sub_override_ass)) },
@@ -258,10 +260,10 @@ object SubtitlesPreferencesScreen : Screen {
 
               PreferenceDivider()
 
-              val scaleByWindow by preferences.scaleByWindow.collectAsState()
+              val scaleByWindow by layout.scaleByWindow.collectAsState()
               SwitchPreference(
                 value = scaleByWindow,
-                onValueChange = { preferences.scaleByWindow.set(it) },
+                onValueChange = { layout.scaleByWindow.set(it) },
                 title = { Text(stringResource(R.string.player_sheets_sub_scale_by_window)) },
                 summary = {
                   Text(

@@ -230,6 +230,7 @@ class PlayerActivity :
   private var isManualBackgroundPlayback = false // Track manual background playback trigger
   private var noisyReceiverRegistered = false
   private var mpvInitialized = false // Track MPV initialization state
+  private var lastAppliedDynamicSubPos: Int? = null // Last dynamically applied primary sub-pos
   private var savePlaybackStateJob: kotlinx.coroutines.Job? = null // Track ongoing save job
   private var subtitleReconciliationJob: kotlinx.coroutines.Job? = null // Reactive auto-restoration job for subtitles
   private var wasPlayingBeforePause = false // Track if video was playing before pause
@@ -1722,7 +1723,24 @@ class PlayerActivity :
     property: String,
     value: String,
   ) {
-    // String properties handled as needed
+    if (!mpvInitialized || player.isExiting || isFinishing) return
+    when (property) {
+      "hwdec-current" -> viewModel.onMpvHwdecCurrentChanged(value)
+      "secondary-sub-text" -> {
+        if (!subtitlesPreferences.automaticSecondarySubtitles.get()) return
+        val secActive = player.secondarySid > 0 && value.isNotBlank()
+        val targetPos = BilingualSubtitleParser.computeEffectivePrimarySubPos(
+          preferences = subtitlesPreferences,
+          secondaryText = value.takeIf { secActive },
+          viewWidthPx = player.width,
+          viewHeightPx = player.height,
+          isSecondaryActive = secActive,
+        )
+        if (lastAppliedDynamicSubPos == targetPos) return
+        lastAppliedDynamicSubPos = targetPos
+        applySubtitlePreferences()
+      }
+    }
   }
 
   /**
@@ -1765,6 +1783,9 @@ class PlayerActivity :
    * applies user preferences, and sets up metadata and media session.
    */
   private fun handleFileLoaded() {
+    // Reset dynamic subtitle position memory for the newly loaded file
+    lastAppliedDynamicSubPos = null
+
     // Extract fileName from intent only if not already set
     // This preserves fileName set in onNewIntent or onCreate
     if (fileName.isBlank()) {
@@ -2057,43 +2078,14 @@ class PlayerActivity :
    * This ensures subtitle customizations (font, colors, position, etc.) persist across videos.
    */
   private fun applySubtitlePreferences() {
-    // Primary Typography settings
-    MPVLib.setPropertyString("sub-font", subtitlesPreferences.font.get())
-    MPVLib.setPropertyInt("sub-font-size", subtitlesPreferences.fontSize.get())
-    MPVLib.setPropertyBoolean("sub-bold", subtitlesPreferences.bold.get())
-    MPVLib.setPropertyBoolean("sub-italic", subtitlesPreferences.italic.get())
-    MPVLib.setPropertyString("sub-justify", subtitlesPreferences.justification.get().value)
-    MPVLib.setPropertyString("sub-border-style", subtitlesPreferences.borderStyle.get().value)
-    MPVLib.setPropertyFloat("sub-outline-size", subtitlesPreferences.borderSize.get())
-    MPVLib.setPropertyFloat("sub-border-size", subtitlesPreferences.borderSize.get())
-    MPVLib.setPropertyInt("sub-shadow-offset", subtitlesPreferences.shadowOffset.get())
-    MPVLib.setPropertyFloat("sub-scale", subtitlesPreferences.subScale.get())
-    MPVLib.setPropertyInt("sub-pos", subtitlesPreferences.subPos.get().roundToInt())
-    MPVLib.setPropertyInt("sub-line-spacing", subtitlesPreferences.subSpacing.get())
-    MPVLib.setPropertyInt("sub-ass-line-spacing", subtitlesPreferences.subSpacing.get())
-
-    // Primary Color settings
-    MPVLib.setPropertyString("sub-color", subtitlesPreferences.textColor.get().toColorHexString())
-    MPVLib.setPropertyString("sub-border-color", subtitlesPreferences.borderColor.get().toColorHexString())
-    MPVLib.setPropertyString("sub-back-color", subtitlesPreferences.backgroundColor.get().toColorHexString())
-
-    // Secondary Subtitle settings (using dedicated Secondary ASS style overrides)
-    applySecondarySubStyleOverrides(subtitlesPreferences)
-
-    // Miscellaneous settings
-    val assOverrideMode = subtitlesPreferences.overrideAssSubs.get().value
-    MPVLib.setPropertyString("sub-ass-override", assOverrideMode)
-    if (assOverrideMode == "force" || assOverrideMode == "strip") {
-      MPVLib.setPropertyBoolean("sub-ass-justify", true)
-    }
-
-    val scaleByWindow = subtitlesPreferences.scaleByWindow.get()
-    val scaleValue = if (scaleByWindow) "yes" else "no"
-    MPVLib.setPropertyString("sub-scale-by-window", scaleValue)
-    MPVLib.setPropertyString("sub-use-margins", scaleValue)
-    MPVLib.setPropertyString("sub-ass-scale-with-window", scaleValue)
-    MPVLib.setPropertyString("sub-ass-force-margins", scaleValue)
-
+    if (!mpvInitialized) return
+    BilingualSubtitleParser.applySubtitlePreferencesForMode(
+      preferences = subtitlesPreferences,
+      secondaryText = runCatching { MPVLib.getPropertyString("secondary-sub-text") }.getOrNull(),
+      viewWidthPx = player.width,
+      viewHeightPx = player.height,
+      isSecondaryTrackActive = player.secondarySid > 0,
+    )
     Log.d(TAG, "Applied subtitle preferences")
   }
 

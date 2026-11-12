@@ -16,7 +16,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,33 +23,35 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import app.marlboroadvance.mpvex.R
+import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
-import app.marlboroadvance.mpvex.preferences.preference.deleteAndGet
 import app.marlboroadvance.mpvex.presentation.components.ExpandableCard
 import app.marlboroadvance.mpvex.presentation.components.SliderItem
 import app.marlboroadvance.mpvex.ui.player.controls.CARDS_MAX_WIDTH
 import app.marlboroadvance.mpvex.ui.player.controls.components.sheets.toFixed
 import app.marlboroadvance.mpvex.ui.player.controls.panelCardsColors
 import app.marlboroadvance.mpvex.ui.theme.spacing
-import `is`.xyz.mpv.MPVLib
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import app.marlboroadvance.mpvex.preferences.SubAssOverride
-import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
+import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
 import me.zhanghai.compose.preference.ListPreference
 import kotlin.math.roundToInt
 import me.zhanghai.compose.preference.ListPreferenceType
 import me.zhanghai.compose.preference.ProvidePreferenceLocals
 import me.zhanghai.compose.preference.SwitchPreference
 import app.marlboroadvance.mpvex.presentation.components.FineTuneDialog
-import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import java.util.Locale
 import org.koin.compose.koinInject
 
 @Composable
-fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
+fun SubtitlesMiscellaneousCard(
+  modifier: Modifier = Modifier,
+  mode: SubtitleMode = SubtitleMode.Single,
+) {
   val preferences = koinInject<SubtitlesPreferences>()
+  val layout = remember(mode) { preferences.layoutProfileFor(mode) }
   val context = LocalContext.current
   var isExpanded by remember { mutableStateOf(true) }
   ExpandableCard(
@@ -67,20 +68,12 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
   ) {
     ProvidePreferenceLocals {
       Column {
-        var overrideAssSubs by remember {
-          mutableStateOf(preferences.overrideAssSubs.get())
-        }
+        val overrideAssSubs by layout.overrideAssSubs.collectAsState()
         ListPreference(
           value = overrideAssSubs,
           onValueChange = {
-            overrideAssSubs = it
-            preferences.overrideAssSubs.set(it)
-            MPVLib.setPropertyString("sub-ass-override", it.value)
-            MPVLib.setPropertyString("secondary-sub-ass-override", it.value)
-            if (it.value == "force" || it.value == "strip") {
-              MPVLib.setPropertyBoolean("sub-ass-justify", true)
-              MPVLib.setPropertyBoolean("secondary-sub-ass-justify", true)
-            }
+            layout.overrideAssSubs.set(it)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
           },
           values = SubAssOverride.entries,
           valueToText = { AnnotatedString(context.getString(it.titleRes)) },
@@ -89,26 +82,18 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
           type = ListPreferenceType.DROPDOWN_MENU,
           icon = { Icon(Icons.Default.Tune, null) },
         )
-        var scaleByWindow by remember {
-          mutableStateOf(MPVLib.getPropertyString("sub-scale-by-window") == "yes")
-        }
+        val scaleByWindow by layout.scaleByWindow.collectAsState()
         SwitchPreference(
           scaleByWindow,
           onValueChange = {
-            scaleByWindow = it
-            preferences.scaleByWindow.set(it)
-            val value = if (it) "yes" else "no"
-            MPVLib.setPropertyString("sub-scale-by-window", value)
-            MPVLib.setPropertyString("sub-use-margins", value)
-            MPVLib.setPropertyString("sub-ass-scale-with-window", value)
-            MPVLib.setPropertyString("sub-ass-force-margins", value)
-            applySecondarySubStyleOverrides(preferences)
+            layout.scaleByWindow.set(it)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
           },
           { Text(stringResource(R.string.player_sheets_sub_scale_by_window)) },
           summary = { Text(stringResource(R.string.player_sheets_sub_scale_by_window_summary)) },
         )
-        val subScale by preferences.subScale.collectAsState()
-        val subPos by preferences.subPos.collectAsState()
+        val subScale by layout.subScale.collectAsState()
+        val subPos by layout.subPos.collectAsState()
         var showSubPosFineTune by remember { mutableStateOf(false) }
 
         SliderItem(
@@ -116,8 +101,8 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
           value = subScale,
           valueText = subScale.toFixed(2).toString(),
           onChange = {
-            preferences.subScale.set(it)
-            MPVLib.setPropertyFloat("sub-scale", it)
+            layout.subScale.set(it)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
           },
           max = 5f,
           icon = {
@@ -133,9 +118,8 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
           valueText = String.format(Locale.US, "%.1f", subPos),
           onChange = { rawPos ->
             val newPos = (rawPos * 10f).roundToInt() / 10f
-            preferences.subPos.set(newPos)
-            MPVLib.setPropertyInt("sub-pos", newPos.roundToInt())
-            applySecondarySubStyleOverrides(preferences)
+            layout.subPos.set(newPos)
+            BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
           },
           min = 0f,
           max = 150f,
@@ -157,12 +141,11 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
             value = subPos,
             min = 0f,
             max = 150f,
-            defaultValue = 92.0f,
+            defaultValue = if (mode == SubtitleMode.Multi) 90.0f else 92.0f,
             onValueChange = { rawPos ->
               val newPos = (rawPos * 10f).roundToInt() / 10f
-              preferences.subPos.set(newPos)
-              MPVLib.setPropertyInt("sub-pos", newPos.roundToInt())
-              applySecondarySubStyleOverrides(preferences)
+              layout.subPos.set(newPos)
+              BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
             },
             onDismissRequest = { showSubPosFineTune = false },
           )
@@ -177,25 +160,12 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
         ) {
           TextButton(
             onClick = {
-              preferences.subPos.deleteAndGet().let { defaultPos ->
-                MPVLib.setPropertyInt("sub-pos", defaultPos.roundToInt())
-                applySecondarySubStyleOverrides(preferences)
-              }
-              preferences.subScale.deleteAndGet().let {
-                MPVLib.setPropertyFloat("sub-scale", it)
-              }
-              val defaultOverride = preferences.overrideAssSubs.deleteAndGet()
-              overrideAssSubs = defaultOverride
-              MPVLib.setPropertyString("sub-ass-override", defaultOverride.value)
-              MPVLib.setPropertyString("secondary-sub-ass-override", defaultOverride.value)
-              val defaultScaleByWindow = preferences.scaleByWindow.deleteAndGet()
-              scaleByWindow = defaultScaleByWindow
-              val scaleValue = if (defaultScaleByWindow) "yes" else "no"
-              MPVLib.setPropertyString("sub-scale-by-window", scaleValue)
-              MPVLib.setPropertyString("sub-use-margins", scaleValue)
-              MPVLib.setPropertyString("sub-ass-scale-with-window", scaleValue)
-              MPVLib.setPropertyString("sub-ass-force-margins", scaleValue)
-              applySecondarySubStyleOverrides(preferences)
+              layout.subPos.delete()
+              layout.subScale.delete()
+              layout.subSpacing.delete()
+              layout.overrideAssSubs.delete()
+              layout.scaleByWindow.delete()
+              BilingualSubtitleParser.applySubtitlePreferencesForMode(preferences, mode)
             },
           ) {
             Row {

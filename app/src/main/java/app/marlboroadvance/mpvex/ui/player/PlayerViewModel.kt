@@ -18,6 +18,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import app.marlboroadvance.mpvex.R
 import app.marlboroadvance.mpvex.preferences.AudioPreferences
+import app.marlboroadvance.mpvex.preferences.DecoderPreferences
 import app.marlboroadvance.mpvex.preferences.GesturePreferences
 import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.preferences.SubtitleMode
@@ -42,6 +43,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -91,6 +93,7 @@ class PlayerViewModel(
   private val audioPreferences: AudioPreferences by inject()
   private val subtitlesPreferences: SubtitlesPreferences by inject()
   private val advancedPreferences: AdvancedPreferences by inject()
+  private val decoderPreferences: DecoderPreferences by inject()
   private val json: Json by inject()
   private val playbackStateDao: app.marlboroadvance.mpvex.database.dao.PlaybackStateDao by inject()
 
@@ -120,6 +123,14 @@ class PlayerViewModel(
   // Audio state
   val currentVolume = MutableStateFlow(host.audioManager.getStreamVolume(AudioManager.STREAM_MUSIC))
   private val volumeBoostCap by MPVLib.propInt["volume-max"].collectAsState(viewModelScope)
+
+  // Reactive decoder state synchronized with DecoderPreferences & MPV hwdec-current
+  private val _activeDecoder = MutableStateFlow(resolveInitialDecoderFromPrefs())
+  val activeDecoder: StateFlow<Decoder> = _activeDecoder.asStateFlow()
+  val isForcingDecoderSwitch = MutableStateFlow(false)
+  private var decoderSwitchJob: Job? = null
+  private var lastDecoderSyncJob: Job? = null
+  private var lastDecoderSwitchTimestamp = 0L
 
   init {
     // Poll precise position only when playing
@@ -328,6 +339,31 @@ class PlayerViewModel(
         }
       }
     }
+
+    // Keep _activeDecoder synced whenever settings change (e.g. "默认使用硬解" toggle)
+    viewModelScope.launch(Dispatchers.Main) {
+      decoderPreferences.tryHWDecoding.changes()
+        .drop(1)
+        .debounce(100)
+        .collect {
+          val resolved = resolveInitialDecoderFromPrefs()
+          if (resolved != _activeDecoder.value) {
+            updateDecoder(resolved)
+          }
+        }
+    }
+
+    viewModelScope.launch(Dispatchers.Main) {
+      decoderPreferences.profile.changes()
+        .drop(1)
+        .debounce(100)
+        .collect {
+          val resolved = resolveInitialDecoderFromPrefs()
+          if (resolved != _activeDecoder.value) {
+            updateDecoder(resolved)
+          }
+        }
+    }
   }
 
   // Cached values
@@ -343,6 +379,7 @@ class PlayerViewModel(
   private companion object {
     const val TAG = "PlayerViewModel"
     const val SEEK_COALESCE_DELAY_MS = 60L
+    const val DECODER_SWITCH_DEBOUNCE_MS = 500L
     val VALID_SUBTITLE_EXTENSIONS =
       setOf(
         // Common & modern
@@ -383,6 +420,103 @@ class PlayerViewModel(
   }
 
   // ==================== Decoder ====================
+
+  private fun resolveInitialDecoderFromPrefs(): Decoder =
+    if (decoderPreferences.tryHWDecoding.get()) {
+      val mode = decoderPreferences.hwDecMode.get()
+      if (mode == Decoder.SW) Decoder.HWPlus else mode
+    } else {
+      Decoder.SW
+    }
+
+  fun onMpvHwdecCurrentChanged(hwdecCurrent: String?) {
+    if (isForcingDecoderSwitch.value) return
+    if (hwdecCurrent.isNullOrBlank()) return
+    val mapped = Decoder.entries.firstOrNull { it.value == hwdecCurrent } ?: return
+    if (mapped != Decoder.SW || !decoderPreferences.tryHWDecoding.get()) {
+      _activeDecoder.value = mapped
+    }
+  }
+
+  fun updateDecoder(newDecoder: Decoder) {
+    val now = System.currentTimeMillis()
+    if (newDecoder == _activeDecoder.value && now - lastDecoderSwitchTimestamp < DECODER_SWITCH_DEBOUNCE_MS) return
+    lastDecoderSwitchTimestamp = now
+
+    val isHw = newDecoder != Decoder.SW
+    decoderPreferences.tryHWDecoding.set(isHw)
+    if (isHw) {
+      decoderPreferences.hwDecMode.set(newDecoder)
+    }
+    _activeDecoder.value = newDecoder
+    playerUpdate.value = PlayerUpdates.ShowText("Decoder: ${newDecoder.title}")
+
+    decoderSwitchJob?.cancel()
+    decoderSwitchJob =
+      viewModelScope.launch(Dispatchers.IO) {
+        val mpvHwdecVal =
+          when (newDecoder) {
+            Decoder.SW -> "no"
+            Decoder.HW -> "mediacodec-copy"
+            Decoder.HWPlus -> "mediacodec"
+            Decoder.AutoCopy -> "auto-copy"
+            Decoder.Auto -> "mediacodec,mediacodec-copy,no"
+          }
+        runCatching {
+          MPVLib.setOptionString("hwdec", mpvHwdecVal)
+          MPVLib.setPropertyString("hwdec", mpvHwdecVal)
+          delay(60)
+          val curHw = MPVLib.getPropertyString("hwdec-current").orEmpty()
+          val switchedOk =
+            if (newDecoder == Decoder.SW) {
+              curHw.isEmpty() || curHw == "no"
+            } else {
+              curHw.isNotEmpty() && curHw != "no"
+            }
+          if (!switchedOk) {
+            // Force a video decoder reload so the new hwdec value takes effect
+            isForcingDecoderSwitch.value = true
+            val vid = MPVLib.getPropertyInt("vid") ?: 1
+            val curPos = MPVLib.getPropertyDouble("time-pos")
+            if (vid > 0) {
+              MPVLib.setPropertyString("vid", "no")
+              delay(60)
+              MPVLib.setPropertyInt("vid", vid)
+            }
+            if (curPos != null && curPos > 0.0) {
+              MPVLib.command("seek", curPos.toString(), "absolute+exact")
+            }
+            lastDecoderSyncJob?.cancel()
+            lastDecoderSyncJob =
+              viewModelScope.launch(Dispatchers.IO) {
+                delay(500)
+                isForcingDecoderSwitch.value = false
+              }
+          }
+          val finalHw = MPVLib.getPropertyString("hwdec-current")
+          if (!finalHw.isNullOrBlank()) {
+            val actual = Decoder.entries.firstOrNull { it.value == finalHw }
+            if (actual != null && (actual != Decoder.SW || newDecoder == Decoder.SW)) {
+              _activeDecoder.value = actual
+            }
+          }
+        }.onFailure { e ->
+          Log.e(TAG, "Failed switching decoder to $newDecoder", e)
+        }
+      }
+  }
+
+  fun toggleDecoder() {
+    val current = _activeDecoder.value
+    val targetDecoder =
+      if (current != Decoder.SW) {
+        Decoder.SW
+      } else {
+        val preferredHw = decoderPreferences.hwDecMode.get()
+        if (preferredHw == Decoder.HW) Decoder.HW else Decoder.HWPlus
+      }
+    updateDecoder(targetDecoder)
+  }
 
   // ==================== Audio/Subtitle Management ====================
 
