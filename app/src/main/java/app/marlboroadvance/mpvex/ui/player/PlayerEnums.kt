@@ -58,8 +58,30 @@ enum class Decoder(
   HWPlus("HW+", "mediacodec"),
   ;
 
+  /**
+   * [Patch D-1] 实际写入 mpv `hwdec` 的值。
+   * 硬解方案带上回退链（最后回落到软解 no），保证硬解不可用时也能正常播放；
+   * 启动时和运行中切换都使用同一份映射，避免两处行为不一致。
+   */
+  val hwdecOption: String
+    get() = when (this) {
+      SW -> "no"
+      HW -> "mediacodec-copy,no"
+      HWPlus -> "mediacodec,mediacodec-copy,no"
+      Auto -> "auto"
+      AutoCopy -> "auto-copy"
+    }
+
   companion object {
-    fun getDecoderFromValue(value: String): Decoder = Decoder.entries.first { it.value == value }
+    /**
+     * [Patch D-1] 由 mpv 的 hwdec(-current) 值反查解码器。
+     * 原实现使用 first{}，遇到空串/未知值（如 hwdec-current 在软解时为空）会抛 NoSuchElementException，现改为安全回退。
+     */
+    fun getDecoderFromValue(value: String): Decoder =
+      Decoder.entries.firstOrNull { it.value == value } ?: if (value.isBlank()) SW else Auto
+
+    /** [Patch D-1] 由持久化的枚举名还原解码器；未设置/非法时返回 null（表示沿用旧的 tryHWDecoding 行为）。 */
+    fun fromName(name: String?): Decoder? = Decoder.entries.firstOrNull { it.name == name }
   }
 }
 

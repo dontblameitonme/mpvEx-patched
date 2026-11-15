@@ -107,9 +107,12 @@ class MPVView(
     }
 
     // Set hwdec with fallback order: HW+ (mediacodec) -> HW (mediacodec-copy) -> SW (no)
+    // [Patch D-1] 优先使用用户在播放界面选择并持久化的解码器；未选择过则沿用原有的 tryHWDecoding 开关
+    val savedDecoder = Decoder.fromName(decoderPreferences.decoderMode.get())
     MPVLib.setOptionString(
       "hwdec",
-      if (decoderPreferences.tryHWDecoding.get()) "mediacodec,mediacodec-copy,no" else "no",
+      savedDecoder?.hwdecOption
+        ?: if (decoderPreferences.tryHWDecoding.get()) "mediacodec,mediacodec-copy,no" else "no",
     )
     MPVLib.setOptionString("hwdec-codecs", "all")
 

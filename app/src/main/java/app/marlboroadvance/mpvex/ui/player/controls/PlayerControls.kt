@@ -181,7 +181,15 @@ fun PlayerControls(
   val seekText by viewModel.seekText.collectAsState()
   val currentChapter by MPVLib.propInt["chapter"].collectAsState()
   val mpvDecoder by MPVLib.propString["hwdec-current"].collectAsState()
-  val decoder by remember { derivedStateOf { getDecoderFromValue(mpvDecoder ?: "auto") } }
+  // [Patch D-1] 按钮/面板显示「用户选择并持久化的解码器」，未选择过时才回退为 mpv 当前实际使用的解码器
+  val decoderPreferences = koinInject<app.marlboroadvance.mpvex.preferences.DecoderPreferences>()
+  val savedDecoderMode by decoderPreferences.decoderMode.collectAsState()
+  val decoder by remember {
+    derivedStateOf {
+      app.marlboroadvance.mpvex.ui.player.Decoder.fromName(savedDecoderMode)
+        ?: getDecoderFromValue(mpvDecoder ?: "")
+    }
+  }
   val isSpeedNonOne by remember(playbackSpeed) {
     derivedStateOf { abs((playbackSpeed ?: 1f) - 1f) > 0.001f }
   }
@@ -1226,7 +1234,7 @@ fun PlayerControls(
         viewModel.unpause()
       },
       decoder = decoder,
-      onUpdateDecoder = { MPVLib.setPropertyString("hwdec", it.value) },
+      onUpdateDecoder = { viewModel.setDecoder(it) }, // [Patch D-1] 切换并持久化，立即生效
       speed = playbackSpeed ?: playerPreferences.defaultSpeed.get(),
       onSpeedChange = { MPVLib.setPropertyFloat("speed", it.toFixed(2)) },
       onMakeDefaultSpeed = { playerPreferences.defaultSpeed.set(it.toFixed(2)) },

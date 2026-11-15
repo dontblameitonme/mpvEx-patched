@@ -92,6 +92,7 @@ class PlayerViewModel(
   private val audioPreferences: AudioPreferences by inject()
   private val subtitlesPreferences: SubtitlesPreferences by inject()
   private val advancedPreferences: AdvancedPreferences by inject()
+  private val decoderPreferences: app.marlboroadvance.mpvex.preferences.DecoderPreferences by inject()
   private val json: Json by inject()
   private val playbackStateDao: app.marlboroadvance.mpvex.database.dao.PlaybackStateDao by inject()
 
@@ -1216,6 +1217,35 @@ class PlayerViewModel(
     val newVolume = volume.coerceIn(0..maxVolume)
     host.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
     currentVolume.value = newVolume
+  }
+
+  /**
+   * [Patch D-1] 切换软/硬解码：写入 mpv 并持久化，当前播放立即生效。
+   * - 持久化 decoderMode，同时同步 tryHWDecoding 开关，保证与「设置 > 解码器」里的默认值一致；
+   * - 切换后短暂等待并核对 hwdec-current，如果解码器没有真正切换（mpv 未重建解码器），
+   *   重新写入 hwdec 并在当前位置做一次精确 seek 以强制重建解码链。
+   */
+  fun setDecoder(decoder: Decoder) {
+    decoderPreferences.decoderMode.set(decoder.name)
+    decoderPreferences.tryHWDecoding.set(decoder != Decoder.SW)
+    MPVLib.setPropertyString("hwdec", decoder.hwdecOption)
+
+    viewModelScope.launch(Dispatchers.IO) {
+      delay(400)
+      val current = MPVLib.getPropertyString("hwdec-current").orEmpty()
+      val isSoftware = current.isBlank() || current == "no"
+      val needsReinit = when (decoder) {
+        Decoder.SW -> !isSoftware // 要软解，却仍在硬解
+        Decoder.HW, Decoder.HWPlus -> isSoftware && current != "no" // hwdec-current 为空：解码器尚未重建
+        else -> false
+      }
+      if (needsReinit) {
+        android.util.Log.d("PlayerViewModel", "Decoder switch not effective (current='$current'), forcing reinit")
+        MPVLib.setPropertyString("hwdec", decoder.hwdecOption)
+        val pos = MPVLib.getPropertyDouble("time-pos")
+        if (pos != null) MPVLib.command("seek", pos.toString(), "absolute+exact")
+      }
+    }
   }
 
   fun changeMPVVolumeTo(volume: Int) {

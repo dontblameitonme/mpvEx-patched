@@ -9,6 +9,9 @@ class DecoderPreferences(
 ) {
   val profile = preferenceStore.getString("mpv_profile", "fast")
   val tryHWDecoding = preferenceStore.getBoolean("try_hw_dec", true)
+
+  // [Patch D-1] 播放界面右上角软/硬解码切换的持久化值（Decoder 枚举名）；空串表示用户从未手动选择，沿用 tryHWDecoding
+  val decoderMode = preferenceStore.getString("player_decoder_mode", "")
   val gpuNext = preferenceStore.getBoolean("gpu_next")
   val useVulkan = preferenceStore.getBoolean("use_vulkan", false)
   val useYUV420P = preferenceStore.getBoolean("use_yuv420p", false)

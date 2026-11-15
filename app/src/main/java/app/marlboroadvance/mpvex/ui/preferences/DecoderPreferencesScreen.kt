@@ -118,6 +118,11 @@ object DecoderPreferencesScreen : Screen {
                 value = tryHWDecoding,
                 onValueChange = {
                   preferences.tryHWDecoding.set(it)
+                  // [Patch D-1] 同步播放界面的解码器选择，避免「设置里的默认值」与「右上角持久化的选择」互相矛盾
+                  preferences.decoderMode.set(
+                    if (it) app.marlboroadvance.mpvex.ui.player.Decoder.HWPlus.name
+                    else app.marlboroadvance.mpvex.ui.player.Decoder.SW.name,
+                  )
                 },
                 title = { Text(stringResource(R.string.pref_decoder_try_hw_dec_title)) },
               )
