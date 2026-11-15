@@ -71,6 +71,7 @@ import org.koin.compose.koinInject
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 @Suppress("CyclomaticComplexMethod", "MultipleEmitters")
@@ -352,6 +353,8 @@ fun GestureHandler(
           // and MPV volume boost required over 5800px.
           val slideHeight = (size.height * 0.6f).coerceAtLeast(1f)
           val brightnessGestureSens = (1.0f / slideHeight).coerceAtLeast(0.001f)
+          // [Patch F-1] 音量与亮度使用同一套换算：滑过 slideHeight 对应满量程（亮度 = 1.0，音量 = maxVolume）。
+          // 保留下限 0.035，保证系统音量档位很少的设备上也不会比之前更迟钝。
           val volumeGestureSens = (viewModel.maxVolume.toFloat() / slideHeight).coerceAtLeast(0.035f)
           val boostRange = if (volumeBoostingCap > 0) volumeBoostingCap.toFloat() else 100f
           val mpvVolumeGestureSens = (boostRange / slideHeight).coerceAtLeast(0.12f)
@@ -513,12 +516,13 @@ fun GestureHandler(
                               originalVolume = currentVolume
                               mpvVolumeStartingY = currentPosition.y
                             }
+                            // [Patch F-1] 浮点累积后四舍五入（原先 toInt() 截断，每档都要多滑近一整档的距离，手感迟钝）
                             val newMPVVolume = calculateNewVerticalGestureValue(
-                              originalMPVVolume ?: 100,
+                              (originalMPVVolume ?: 100).toFloat(),
                               mpvVolumeStartingY,
                               currentPosition.y,
                               mpvVolumeGestureSens,
-                            ).coerceIn(100..volumeBoostingCap + 100)
+                            ).roundToInt().coerceIn(100..volumeBoostingCap + 100)
 
                             if (newMPVVolume != lastMPVVolumeValue) {
                               viewModel.changeMPVVolumeTo(newMPVVolume)
@@ -530,12 +534,13 @@ fun GestureHandler(
                               originalMPVVolume = currentMPVVolume
                               startingY = currentPosition.y
                             }
+                            // [Patch F-1] 浮点累积后四舍五入，与亮度手势的连续手感保持一致
                             val newVolume = calculateNewVerticalGestureValue(
-                              originalVolume,
+                              originalVolume.toFloat(),
                               startingY,
                               currentPosition.y,
                               volumeGestureSens,
-                            )
+                            ).roundToInt()
 
                             if (newVolume != lastVolumeValue) {
                               viewModel.changeVolumeTo(newVolume)

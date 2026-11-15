@@ -258,6 +258,7 @@ class TrackSelector(
         if (secBilingualTrack != null) {
           Log.d(TAG, "Smart Sub: Bilingual Secondary [英] (id=${secBilingualTrack.id}) [Applied]")
           MPVLib.setPropertyInt("secondary-sid", secBilingualTrack.id)
+          syncSecondaryDelayAndSpeed()
           applySecondarySubStyleOverrides(subtitlesPreferences)
         }
         return
@@ -356,6 +357,15 @@ class TrackSelector(
     }
   }
 
+  /**
+   * [Patch B-5] 自动选中副字幕后，让副字幕的延迟/速度与主字幕保持一致，保证双语同步。
+   * （手动调整延迟时 SubtitleDelayPanel 已同步写入两者，这里补上自动选轨路径。）
+   */
+  private fun syncSecondaryDelayAndSpeed() {
+    MPVLib.setPropertyDouble("secondary-sub-delay", MPVLib.getPropertyDouble("sub-delay") ?: 0.0)
+    MPVLib.setPropertyDouble("secondary-sub-speed", MPVLib.getPropertyDouble("sub-speed") ?: 1.0)
+  }
+
   private fun autoSelectComplementarySecondaryTrack(subTracks: List<Track>, primaryTrackId: Int) {
     if (subtitlesPreferences.subtitleMode.get() != app.marlboroadvance.mpvex.preferences.SubtitleMode.Multi) return
     val currentSecSid = MPVLib.getPropertyInt("secondary-sid") ?: 0
@@ -379,6 +389,7 @@ class TrackSelector(
     if (candidate != null) {
       Log.d(TAG, "Smart Sub: Auto-paired complementary secondary track in Multi mode (id=${candidate.id}) [Applied]")
       MPVLib.setPropertyInt("secondary-sid", candidate.id)
+      syncSecondaryDelayAndSpeed()
       applySecondarySubStyleOverrides(subtitlesPreferences)
     }
   }
