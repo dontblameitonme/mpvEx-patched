@@ -36,7 +36,7 @@ data class BilingualSplitResult(
  */
 object BilingualSubtitleParser {
   private const val TAG = "BilingualSubParser"
-  private const val CACHE_DIR_NAME = "bilingual_subs_v6" // [Patch C-3/A-3/A-4] 生成内容变化，升级缓存目录使旧缓存失效
+  const val CACHE_DIR_NAME = "bilingual_subs_v6" // [Patch C-3/A-3/A-4] 生成内容变化，升级缓存目录使旧缓存失效
 
   private val CJK_REGEX = Regex("[\\u4e00-\\u9fff\\u3400-\\u4dbf]")
   private val LATIN_REGEX = Regex("[a-zA-Z]")
@@ -720,7 +720,8 @@ fun applySecondarySubStyleOverrides(preferences: SubtitlesPreferences) {
   ).joinToString(",")
 
   MPVLib.setPropertyString("sub-ass-style-overrides", overrides)
-  MPVLib.setPropertyString("secondary-sub-ass-override", "scale")
+  // [Patch A-2/B-4] secondary-sub-ass-override 不再在此写死为 scale：
+  // 由 SubtitleAssPolicy 按副字幕轨道类型决定（拆分生成的 [英] 用 scale，其他 ASS 轨道用 strip）
   MPVLib.setPropertyInt("secondary-sub-pos", secPosInt)
   val scaleByWindow = preferences.scaleByWindow.get()
   val scaleValue = if (scaleByWindow) "yes" else "no"

@@ -23,6 +23,7 @@ import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.preferences.SubtitleMode
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
+import app.marlboroadvance.mpvex.utils.media.SubtitleAssPolicy
 import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import app.marlboroadvance.mpvex.utils.media.ChecksumUtils
 import app.marlboroadvance.mpvex.utils.media.MediaInfoParser
@@ -162,6 +163,16 @@ class PlayerViewModel(
     MPVLib.propString["secondary-sid"]
       .map { it?.toIntOrNull() ?: 0 }
       .stateIn(viewModelScope, SharingStarted.Lazily, MPVLib.getPropertyString("secondary-sid")?.toIntOrNull() ?: 0)
+
+  init {
+    // [Patch A-2/B-4] 主/副字幕轨道或轨道列表变化（切换轨道、视频重新加载）时，重新应用 ASS 覆盖策略
+    viewModelScope.launch(Dispatchers.IO) {
+      combine(subtitleTracks, primarySid, secondarySid) { tracks, pri, sec -> Triple(tracks, pri, sec) }
+        .collect { (tracks, pri, sec) ->
+          SubtitleAssPolicy.apply(subtitlesPreferences, tracks, pri, sec)
+        }
+    }
+  }
 
   val audioTracks: StateFlow<List<TrackNode>> =
     MPVLib.propNode["track-list"]

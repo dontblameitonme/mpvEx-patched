@@ -48,6 +48,7 @@ import app.marlboroadvance.mpvex.ui.theme.MpvexTheme
 import app.marlboroadvance.mpvex.utils.history.RecentlyPlayedOps
 import app.marlboroadvance.mpvex.utils.media.HttpUtils
 import app.marlboroadvance.mpvex.utils.media.BilingualSubtitleParser
+import app.marlboroadvance.mpvex.utils.media.SubtitleAssPolicy
 import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import app.marlboroadvance.mpvex.utils.media.SubtitleOps
 import app.marlboroadvance.mpvex.utils.media.PlaybackStateOps
@@ -2070,11 +2071,10 @@ class PlayerActivity :
     applySecondarySubStyleOverrides(subtitlesPreferences)
 
     // Miscellaneous settings
-    val assOverrideMode = subtitlesPreferences.overrideAssSubs.get().value
-    MPVLib.setPropertyString("sub-ass-override", assOverrideMode)
-    if (assOverrideMode == "force" || assOverrideMode == "strip") {
-      MPVLib.setPropertyBoolean("sub-ass-justify", true)
-    }
+    // [Patch A-2/B-4] ASS 覆盖模式交由 SubtitleAssPolicy 按当前主/副字幕轨道决定并重新应用，
+    // 避免视频重新加载后覆盖模式丢失，同时对非拆分生成的 ASS 轨道强制 strip
+    SubtitleAssPolicy.reset()
+    SubtitleAssPolicy.applyFromMpv(subtitlesPreferences)
 
     val scaleByWindow = subtitlesPreferences.scaleByWindow.get()
     val scaleValue = if (scaleByWindow) "yes" else "no"

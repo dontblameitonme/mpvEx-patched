@@ -37,6 +37,7 @@ import `is`.xyz.mpv.MPVLib
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import app.marlboroadvance.mpvex.preferences.SubAssOverride
+import app.marlboroadvance.mpvex.utils.media.SubtitleAssPolicy
 import app.marlboroadvance.mpvex.utils.media.applySecondarySubStyleOverrides
 import me.zhanghai.compose.preference.ListPreference
 import kotlin.math.roundToInt
@@ -75,8 +76,8 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
           onValueChange = {
             overrideAssSubs = it
             preferences.overrideAssSubs.set(it)
-            MPVLib.setPropertyString("sub-ass-override", it.value)
-            MPVLib.setPropertyString("secondary-sub-ass-override", it.value)
+            // [Patch A-2/B-4] 由策略按当前轨道应用覆盖模式（ASS 轨道仍强制 strip，拆分的 [英] 保持 scale）
+            SubtitleAssPolicy.applyFromMpv(preferences)
             if (it.value == "force" || it.value == "strip") {
               MPVLib.setPropertyBoolean("sub-ass-justify", true)
               MPVLib.setPropertyBoolean("secondary-sub-ass-justify", true)
@@ -186,8 +187,7 @@ fun SubtitlesMiscellaneousCard(modifier: Modifier = Modifier) {
               }
               val defaultOverride = preferences.overrideAssSubs.deleteAndGet()
               overrideAssSubs = defaultOverride
-              MPVLib.setPropertyString("sub-ass-override", defaultOverride.value)
-              MPVLib.setPropertyString("secondary-sub-ass-override", defaultOverride.value)
+              SubtitleAssPolicy.applyFromMpv(preferences) // [Patch A-2/B-4]
               val defaultScaleByWindow = preferences.scaleByWindow.deleteAndGet()
               scaleByWindow = defaultScaleByWindow
               val scaleValue = if (defaultScaleByWindow) "yes" else "no"
