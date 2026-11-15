@@ -92,6 +92,9 @@ fun SubtitlesSheet(
 
       if (isEmbeddedExpanded) {
         list.addAll(internal.map { SubtitleItem.Track(it) })
+      } else {
+        // [Patch C-1] 折叠时用户已选中的内嵌字幕轨道仍须始终可见（可直接取消选择），其余轨道保持折叠
+        list.addAll(selectedInternalTracks.map { SubtitleItem.Track(it) })
       }
     }
 
@@ -156,9 +159,7 @@ fun SubtitlesSheet(
           }
           val roleBadge = if (subtitleMode == SubtitleMode.Single) {
             null
-          } else if (track.title?.startsWith("[双语]") == true && track.id == primarySid) {
-            stringResource(R.string.player_sheets_sub_role_bilingual)
-          } else when (track.id) {
+          } else when (track.id) { // [Patch C-3] 已移除 [双语] 轨道角标
             primarySid -> stringResource(R.string.player_sheets_sub_role_primary)
             secondarySid -> stringResource(R.string.player_sheets_sub_role_secondary)
             else -> null

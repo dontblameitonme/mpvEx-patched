@@ -233,13 +233,12 @@ object SubtitleOps : KoinComponent {
           if (splitResult != null) {
             MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", splitResult.primaryTitle)
             MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", splitResult.secondaryTitle)
-            MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
+            // [Patch C-3] 不再生成/添加合并的 [双语] 轨道
             // Also keep original untouched subtitle as fallback
             MPVLib.command("sub-add", subtitle.absolutePath, "auto", "[原版] ${subtitle.name}")
 
             if (isDefault) {
               val mode = subtitlesPreferences.subtitleMode.get()
-              var biId: Int? = null
               var priId: Int? = null
               var secId: Int? = null
               for (attempt in 0 until 30) {
@@ -259,9 +258,6 @@ object SubtitleOps : KoinComponent {
                     if (extPath == splitResult.secondaryFile.absolutePath || title.startsWith("[英]")) {
                       secId = id
                     }
-                    if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
-                      biId = id
-                    }
                   }
                 }
                 if (priId != null && secId != null) break
@@ -279,12 +275,6 @@ object SubtitleOps : KoinComponent {
                   applySecondarySubStyleOverrides(subtitlesPreferences)
                   hasSelectedPrimary = true
                   Log.d(TAG, "Autoload bilingual subtitle active: sid=$priId ([中]), secondary-sid=$secId ([英])")
-                } else if (biId != null) {
-                  MPVLib.setPropertyInt("sid", biId)
-                  MPVLib.setPropertyString("secondary-sid", "no")
-                  applySecondarySubStyleOverrides(subtitlesPreferences)
-                  hasSelectedPrimary = true
-                  Log.d(TAG, "Autoload bilingual subtitle active: sid=$biId ([双语])")
                 } else if (priId != null) {
                   MPVLib.setPropertyInt("sid", priId)
                   hasSelectedPrimary = true
@@ -296,14 +286,10 @@ object SubtitleOps : KoinComponent {
                   MPVLib.setPropertyString("secondary-sid", "no")
                   hasSelectedPrimary = true
                   Log.d(TAG, "Autoload single subtitle active: sid=$priId ([中])")
-                } else if (biId != null) {
-                  MPVLib.setPropertyInt("sid", biId)
-                  MPVLib.setPropertyString("secondary-sid", "no")
-                  hasSelectedPrimary = true
                 }
               }
             }
-            Log.d(TAG, "Autoloaded bilingual subtitle: ${subtitle.name} -> loaded bilingual, primary & secondary")
+            Log.d(TAG, "Autoloaded bilingual subtitle: ${subtitle.name} -> loaded primary & secondary")
           } else {
             // MPV command format: sub-add <url> [<flags> [<title>]]
             // Use "select" for the first autoloaded subtitle so it is enabled by default

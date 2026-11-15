@@ -1149,12 +1149,11 @@ class PlayerActivity :
         if (splitResult != null) {
           MPVLib.command("sub-add", splitResult.primaryFile.absolutePath, "auto", "[中] ${splitResult.primaryTitle}")
           MPVLib.command("sub-add", splitResult.secondaryFile.absolutePath, "auto", "[英] ${splitResult.secondaryTitle}")
-          MPVLib.command("sub-add", splitResult.bilingualFile.absolutePath, "auto", splitResult.bilingualTitle)
+          // [Patch C-3] 不再生成/添加合并的 [双语] 轨道
           MPVLib.command("sub-add", subfile, "auto", "[原版] ${file?.name ?: suburi.lastPathSegment}")
 
           if (flag == "select") {
             val mode = subtitlesPreferences.subtitleMode.get()
-            var biId: Int? = null
             var priId: Int? = null
             var secId: Int? = null
             for (attempt in 0 until 30) {
@@ -1174,9 +1173,6 @@ class PlayerActivity :
                   if (extPath == splitResult.secondaryFile.absolutePath || title.startsWith("[英]")) {
                     secId = id
                   }
-                  if (extPath == splitResult.bilingualFile.absolutePath || title.startsWith("[双语]")) {
-                    biId = id
-                  }
                 }
               }
               if (priId != null && secId != null) break
@@ -1191,10 +1187,6 @@ class PlayerActivity :
                 MPVLib.setPropertyDouble("secondary-sub-delay", curDelay)
                 MPVLib.setPropertyDouble("secondary-sub-speed", curSpeed)
                 applySecondarySubStyleOverrides(subtitlesPreferences)
-              } else if (biId != null) {
-                MPVLib.setPropertyInt("sid", biId)
-                MPVLib.setPropertyString("secondary-sid", "no")
-                applySecondarySubStyleOverrides(subtitlesPreferences)
               } else if (priId != null) {
                 MPVLib.setPropertyInt("sid", priId)
                 MPVLib.setPropertyString("secondary-sid", "no")
@@ -1202,9 +1194,6 @@ class PlayerActivity :
             } else {
               if (priId != null) {
                 MPVLib.setPropertyInt("sid", priId)
-                MPVLib.setPropertyString("secondary-sid", "no")
-              } else if (biId != null) {
-                MPVLib.setPropertyInt("sid", biId)
                 MPVLib.setPropertyString("secondary-sid", "no")
               }
             }
