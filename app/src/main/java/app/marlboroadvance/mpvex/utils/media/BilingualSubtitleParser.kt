@@ -7,6 +7,8 @@ import app.marlboroadvance.mpvex.preferences.SubtitleJustification
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.ui.player.controls.components.panels.SubtitlesBorderStyle
 import `is`.xyz.mpv.MPVLib
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import java.io.BufferedWriter
 import java.io.File
 import java.io.InputStream
@@ -34,9 +36,100 @@ data class BilingualSplitResult(
  *
  * Utilizes CRC32-based disk caching so repeated loads cost 0ms.
  */
-object BilingualSubtitleParser {
+object BilingualSubtitleParser : KoinComponent {
   private const val TAG = "BilingualSubParser"
   const val CACHE_DIR_NAME = "bilingual_subs_v6" // [Patch C-3/A-3/A-4] 生成内容变化，升级缓存目录使旧缓存失效
+
+  // [Patch A-3/A-4] 读取用户的字幕设置，用于估算「同语言多行能否合并为一行」以及「副字幕多行时主字幕需上抬多少」
+  private val subtitlesPreferences: SubtitlesPreferences by inject()
+
+  /** 生成的 [中] 字幕样式里的默认 MarginV（与 writePrimaryAssHeader 中 Default 样式保持一致）。 */
+  private const val PRIMARY_BASE_MARGIN_V = 20
+
+  /** 副字幕一行的行高相对字号的系数（沿用基线 45 号字 ≈ 56 的实测比例）。 */
+  private const val SECONDARY_LINE_HEIGHT_RATIO = 1.244f
+
+  /**
+   * [Patch A-3/A-4] 字幕排版参数。
+   * 这些参数由用户当前字幕设置与屏幕比例决定，因此参与缓存 key：设置变化后下次加载字幕会重新生成。
+   */
+  data class LayoutParams(
+    /** 主字幕（中文）单行可用宽度，单位：1080 画布像素。 */
+    val primaryFontPx: Float,
+    /** 副字幕（英文）字号，单位：1080 画布像素。 */
+    val secondaryFontPx: Float,
+    /** 一行可用的最大宽度，单位：1080 画布像素。 */
+    val lineCapacityPx: Float,
+    /** 副字幕多出一行时，主字幕需要上抬的像素（1080 画布）。 */
+    val secondaryLineHeight: Int,
+  ) {
+    val signature: String
+      get() = "p${primaryFontPx.roundToInt()}_s${secondaryFontPx.roundToInt()}_w${lineCapacityPx.roundToInt()}"
+  }
+
+  /** 根据用户设置和手机屏幕比例计算排版参数；任何异常都回落到基线默认值。 */
+  fun computeLayout(context: Context): LayoutParams {
+    return try {
+      val prefs = subtitlesPreferences
+      val dm = context.resources.displayMetrics
+      // 以横屏观看为准：长边 / 短边 作为窗口宽高比（字幕按窗口宽度排版）
+      val aspect = (maxOf(dm.widthPixels, dm.heightPixels).toFloat() /
+        minOf(dm.widthPixels, dm.heightPixels).toFloat().coerceAtLeast(1f)).coerceIn(1.2f, 2.6f)
+      val subScale = prefs.subScale.get().coerceAtLeast(0.1f)
+      val overrideMode = prefs.overrideAssSubs.get().value
+      // scale/no 模式下 [中] 使用自身样式（55，1080 画布）；force/strip 模式使用用户字号（mpv 以 720 为基准，换算到 1080 需 ×1.5）
+      val primaryPx = if (overrideMode == "force" || overrideMode == "strip") {
+        prefs.fontSize.get() * 1.5f * subScale
+      } else {
+        55f * subScale
+      }
+      val secondaryPx = (prefs.secondaryFontSize.get() * prefs.secondarySubScale.get()).coerceAtLeast(1f)
+      LayoutParams(
+        primaryFontPx = primaryPx.coerceAtLeast(1f),
+        secondaryFontPx = secondaryPx,
+        lineCapacityPx = 1080f * aspect * 0.88f, // 预留 12% 的左右边距与描边余量
+        secondaryLineHeight = (secondaryPx * SECONDARY_LINE_HEIGHT_RATIO).roundToInt().coerceAtLeast(1),
+      )
+    } catch (e: Exception) {
+      Log.w(TAG, "computeLayout failed, fallback to defaults: ${e.message}")
+      LayoutParams(55f, 45f, 1080f * 2.0f * 0.88f, 56)
+    }
+  }
+
+  /** 估算单个字符宽度（单位：em）。CJK/全角 = 1em，拉丁字母按平均字宽估算（偏保守，宁可不合并）。 */
+  private fun charWidthEm(c: Char): Float {
+    val code = c.code
+    return when {
+      code in 0x2E80..0x9FFF || code in 0xAC00..0xD7AF || code in 0xFF00..0xFFEF -> 1.0f
+      c == ' ' -> 0.28f
+      c.isUpperCase() -> 0.68f
+      c.isDigit() -> 0.56f
+      c.isLetter() -> 0.52f
+      else -> 0.34f
+    }
+  }
+
+  private fun textWidthPx(text: String, fontPx: Float): Float {
+    var em = 0f
+    for (ch in text) em += charWidthEm(ch)
+    return em * fontPx
+  }
+
+  // 以「- 」「– 」「— 」开头的行是对话换人标记，不能与上一行合并
+  private val DIALOGUE_DASH_REGEX = Regex("^[-\\u2013\\u2014]")
+
+  /**
+   * [Patch A-3] 同语言多余换行合并。
+   * 仅当「同一语言的所有行合并成一行后，宽度仍在屏幕可用宽度内」才合并；否则保持原有换行，绝不强制合并。
+   * 中英两种语言之间的换行不受影响（本函数每次只处理单一语言的行）。
+   */
+  internal fun mergeSameLanguageLines(lines: List<String>, fontPx: Float, capacityPx: Float): List<String> {
+    if (lines.size < 2) return lines
+    // 对话换人（行首破折号）不合并，避免把两个人的台词挤成一句
+    if (lines.drop(1).any { DIALOGUE_DASH_REGEX.containsMatchIn(it) }) return lines
+    val merged = lines.joinToString(" ")
+    return if (textWidthPx(merged, fontPx) <= capacityPx) listOf(merged) else lines
+  }
 
   private val CJK_REGEX = Regex("[\\u4e00-\\u9fff\\u3400-\\u4dbf]")
   private val LATIN_REGEX = Regex("[a-zA-Z]")
@@ -89,8 +182,10 @@ object BilingualSubtitleParser {
     val cacheDir = File(context.cacheDir, CACHE_DIR_NAME)
     if (!cacheDir.exists()) cacheDir.mkdirs()
 
+    // [Patch A-3/A-4] 排版参数参与缓存 key：字号/屏幕比例变化后重新生成
+    val layout = computeLayout(context)
     val hashKey = ChecksumUtils.getCRC32(
-      "${sourceFile.absolutePath}_${sourceFile.length()}_${sourceFile.lastModified()}"
+      "${sourceFile.absolutePath}_${sourceFile.length()}_${sourceFile.lastModified()}_${layout.signature}"
     )
     val folder = File(cacheDir, hashKey)
     if (!folder.exists()) folder.mkdirs()
@@ -118,9 +213,9 @@ object BilingualSubtitleParser {
       val rawBytes = sourceFile.readBytes()
       val content = readTextWithAutoEncoding(rawBytes)
       val result = if (ext == "srt") {
-        splitSrt(content, folder, primaryFile, secondaryFile, baseName)
+        splitSrt(content, folder, primaryFile, secondaryFile, baseName, layout)
       } else {
-        splitAss(content, folder, primaryFile, secondaryFile, baseName)
+        splitAss(content, folder, primaryFile, secondaryFile, baseName, layout)
       }
       result
     } catch (e: Exception) {
@@ -142,7 +237,9 @@ object BilingualSubtitleParser {
       val cacheDir = File(context.cacheDir, CACHE_DIR_NAME)
       if (!cacheDir.exists()) cacheDir.mkdirs()
 
-      val hashKey = ChecksumUtils.getCRC32("${uri}_${rawBytes.size}")
+      // [Patch A-3/A-4] 排版参数参与缓存 key
+      val layout = computeLayout(context)
+      val hashKey = ChecksumUtils.getCRC32("${uri}_${rawBytes.size}_${layout.signature}")
       val folder = File(cacheDir, hashKey)
       if (!folder.exists()) folder.mkdirs()
 
@@ -165,9 +262,9 @@ object BilingualSubtitleParser {
 
       val content = readTextWithAutoEncoding(rawBytes)
       if (ext == "srt") {
-        splitSrt(content, folder, primaryFile, secondaryFile, baseName)
+        splitSrt(content, folder, primaryFile, secondaryFile, baseName, layout)
       } else {
-        splitAss(content, folder, primaryFile, secondaryFile, baseName)
+        splitAss(content, folder, primaryFile, secondaryFile, baseName, layout)
       }
     } catch (e: Exception) {
       Log.e(TAG, "Failed to split bilingual subtitle from URI $uri: ${e.message}", e)
@@ -181,6 +278,7 @@ object BilingualSubtitleParser {
     primaryFile: File,
     secondaryFile: File,
     baseName: String,
+    layout: LayoutParams,
   ): BilingualSplitResult? {
     // Force standard 1080p canvas for all split ASS subtitles, eliminating font scaling bugs
     // caused by legacy low-resolution canvases (e.g. 288p, 360p, 576p)
@@ -205,7 +303,7 @@ object BilingualSubtitleParser {
         tempSec.bufferedWriter(Charsets.UTF_8).use { secWriter ->
           writePrimaryAssHeader(priWriter, baseName, playResX, playResY)
           writeSecondaryAssHeader(secWriter, baseName, playResX, playResY)
-          writeAlignedCues(cues, priWriter, secWriter)
+          writeAlignedCues(cues, priWriter, secWriter, layout)
         }
       }
 
@@ -231,6 +329,7 @@ object BilingualSubtitleParser {
     primaryFile: File,
     secondaryFile: File,
     baseName: String,
+    layout: LayoutParams,
   ): BilingualSplitResult? {
     val cues = parseSrtToCues(content)
     val bilingualCount = cues.count { it.priParts.isNotEmpty() && it.secParts.isNotEmpty() }
@@ -250,7 +349,7 @@ object BilingualSubtitleParser {
         tempSec.bufferedWriter(Charsets.UTF_8).use { secWriter ->
           writePrimaryAssHeader(priWriter, baseName, 1920, 1080)
           writeSecondaryAssHeader(secWriter, baseName, 1920, 1080)
-          writeAlignedCues(cues, priWriter, secWriter)
+          writeAlignedCues(cues, priWriter, secWriter, layout)
         }
       }
 
@@ -467,6 +566,7 @@ object BilingualSubtitleParser {
     cues: List<CueItem>,
     priWriter: BufferedWriter,
     secWriter: BufferedWriter,
+    layout: LayoutParams,
   ) {
     for (cue in cues) {
       val startAss = msToAssTime(cue.startMs)
@@ -475,16 +575,22 @@ object BilingualSubtitleParser {
       val priCleanList = cue.priParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
       val secCleanList = cue.secParts.map { cleanAssTags(it) }.filter { it.isNotEmpty() }
 
-      val priText = priCleanList.joinToString("\\N")
-      val cleanedSec = secCleanList.joinToString("\\N")
+      // [Patch A-3] 同语言的多余换行在屏幕放得下时合并为一行；中英之间的分行保留
+      val priLines = mergeSameLanguageLines(priCleanList, layout.primaryFontPx, layout.lineCapacityPx)
+      val secLines = mergeSameLanguageLines(secCleanList, layout.secondaryFontPx, layout.lineCapacityPx)
+
+      val priText = priLines.joinToString("\\N")
+      val cleanedSec = secLines.joinToString("\\N")
 
       // 1. Primary ASS dialogue (pure Chinese)
-      // When secondary subtitle has multiple lines (secCleanList.size > 1),
-      // dynamically elevate primary subtitle MarginV so it stays cleanly above secondary subtitle.
+      // [Patch A-4] 仅当副字幕（英文）合并后仍为多行时，才把主字幕整体上抬「多出的行数 × 副字幕实际行高」；
+      // 副字幕单行时 MarginV 保持 0（沿用样式默认值），不会误抬主字幕。
+      // 注意：cue 中非 0 的 MarginV 会「替换」样式默认值(20)，因此需加上 PRIMARY_BASE_MARGIN_V，
+      // 否则实际上抬量会少 20 像素而仍与英文首行重叠。
+      // 行高随副字幕字号/缩放动态计算，不再写死 56。
       if (priText.isNotEmpty()) {
-        val secLineCount = secCleanList.size
-        // 56 ASS pixels per extra line of secondary subtitle ensures zero multi-line overlap
-        val dynamicMarginV = if (secLineCount > 1) (secLineCount - 1) * 56 else 0
+        val extraSecLines = (secLines.size - 1).coerceIn(0, 3)
+        val dynamicMarginV = if (extraSecLines > 0) PRIMARY_BASE_MARGIN_V + extraSecLines * layout.secondaryLineHeight else 0
         priWriter.write("Dialogue: 0,$startAss,$endAss,Default,,0,0,$dynamicMarginV,,$priText")
         priWriter.newLine()
       }
